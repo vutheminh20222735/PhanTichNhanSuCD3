@@ -88,7 +88,7 @@ class PeopleRiskApp(ctk.CTk):
         self.minsize(1200, 720)
         self.configure(fg_color=THEME.bg)
 
-        self.state = DatasetState()
+        self.dataset_state = DatasetState()
 
         # Pending upload (chưa confirm)
         self.pending_df: pd.DataFrame | None = None
@@ -120,55 +120,55 @@ class PeopleRiskApp(ctk.CTk):
     # ============================================================ PROPERTIES
     @property
     def df(self) -> pd.DataFrame:
-        return self.state.active_df
+        return self.dataset_state.active_df
 
     @property
     def schema(self) -> dict:
-        return self.state.schema or {}
+        return self.dataset_state.schema or {}
 
     @property
     def target(self) -> str | None:
-        return self.state.target
+        return self.dataset_state.target
 
     @property
     def has_dataset(self) -> bool:
-        return self.state.ready
+        return self.dataset_state.ready
 
     @property
     def filter_state(self) -> dict[str, str]:
-        return self.state.filter_state
+        return self.dataset_state.filter_state
 
     @property
     def train_result(self):
-        return self.state.train_result
+        return self.dataset_state.train_result
 
     @train_result.setter
     def train_result(self, value) -> None:
-        self.state.train_result = value
+        self.dataset_state.train_result = value
 
     @property
     def eval_result(self):
-        return self.state.eval_result
+        return self.dataset_state.eval_result
 
     @eval_result.setter
     def eval_result(self, value) -> None:
-        self.state.eval_result = value
+        self.dataset_state.eval_result = value
 
     @property
     def salary_eval(self):
-        return self.state.salary_eval
+        return self.dataset_state.salary_eval
 
     @salary_eval.setter
     def salary_eval(self, value) -> None:
-        self.state.salary_eval = value
+        self.dataset_state.salary_eval = value
 
     @property
     def model_status(self) -> str:
-        return self.state.model_status
+        return self.dataset_state.model_status
 
     @model_status.setter
     def model_status(self, value: str) -> None:
-        self.state.model_status = value
+        self.dataset_state.model_status = value
 
     # ============================================================ SHELL
     def _build_shell(self) -> None:
@@ -256,7 +256,7 @@ class PeopleRiskApp(ctk.CTk):
             self.sidebar_dataset_lbl.configure(text="No dataset loaded")
             return
         n, m = self.df.shape
-        name = self.state.name or "dataset"
+        name = self.dataset_state.name or "dataset"
         tgt = self.target or "—"
         self.sidebar_dataset_lbl.configure(text=f"{name}\n{n:,} × {m}\nTarget: {tgt}")
 
@@ -265,19 +265,19 @@ class PeopleRiskApp(ctk.CTk):
         self.header_label.configure(text=label)
         self.subheader_label.configure(text=hint)
 
-        if self.has_dataset and self.state.loaded_at:
-            loaded = self.state.loaded_at.strftime("%d/%m/%Y %H:%M")
+        if self.has_dataset and self.dataset_state.loaded_at:
+            loaded = self.dataset_state.loaded_at.strftime("%d/%m/%Y %H:%M")
             n, m = self.df.shape
             model = self.eval_result["best_model_name"] if self.eval_result else self.model_status
             self.status_label.configure(text=f"PeopleRisk AI  ·  {loaded}")
             self.footer_right.configure(
-                text=f"{self.state.name}  ·  {n:,}×{m}  ·  Target:{self.target}  ·  Model:{model}"
+                text=f"{self.dataset_state.name}  ·  {n:,}×{m}  ·  Target:{self.target}  ·  Model:{model}"
             )
             clear_frame(self.model_pill_host)
             kind = "success" if self.eval_result else "warning"
             status_pill(self.model_pill_host, f"Model: {model}", kind).pack()
         else:
-            st = self.state.status.value if self.state.status else "empty"
+            st = self.dataset_state.status.value if self.dataset_state.status else "empty"
             self.status_label.configure(text=f"PeopleRisk AI  ·  status: {st}")
             self.footer_right.configure(text="No dataset loaded")
             clear_frame(self.model_pill_host)
@@ -368,7 +368,7 @@ class PeopleRiskApp(ctk.CTk):
 
     def _clear_analysis_cache(self) -> None:
         self.cache.clear()
-        self.state.cache_store.clear()
+        self.dataset_state.cache_store.clear()
 
     def _clear_pending(self) -> None:
         self.pending_df = None
@@ -471,7 +471,7 @@ class PeopleRiskApp(ctk.CTk):
             detail = "không lọc"
         body_text(
             self.content,
-            f"Đang phân tích {len(df):,} / {len(self.df):,} nhân viên  ·  {detail}  ·  {self.state.name}",
+            f"Đang phân tích {len(df):,} / {len(self.df):,} nhân viên  ·  {detail}  ·  {self.dataset_state.name}",
             muted=True,
         )
 
@@ -504,9 +504,9 @@ class PeopleRiskApp(ctk.CTk):
     # ============================================================ UPLOAD
     def _page_upload(self) -> None:
         root = self.content
-        status = self.state.status.value
+        status = self.dataset_state.status.value
         if self.pending_df is not None:
-            status = "loading" if self.state.status == DatasetStatus.LOADING else "preview"
+            status = "loading" if self.dataset_state.status == DatasetStatus.LOADING else "preview"
         elif self.has_dataset:
             status = "ready"
 
@@ -529,7 +529,7 @@ class PeopleRiskApp(ctk.CTk):
         btns = ctk.CTkFrame(box, fg_color="transparent")
         btns.pack(padx=12, pady=8, anchor="w")
         primary_button(btns, "Chọn file CSV", self._pick_csv, width=160).pack(side="left", padx=4)
-        if self.has_dataset and self.state.path:
+        if self.has_dataset and self.dataset_state.path:
             secondary_button(btns, "Reload Dataset", self._reload_dataset, width=150).pack(side="left", padx=4)
         if self.has_dataset or self.pending_df is not None:
             secondary_button(btns, "Remove Dataset", self._remove_dataset, width=150).pack(side="left", padx=4)
@@ -539,8 +539,8 @@ class PeopleRiskApp(ctk.CTk):
         )
         self.upload_status_lbl.pack(anchor="w", padx=12, pady=(0, 8))
 
-        if self.state.status == DatasetStatus.ERROR and self.state.error_message:
-            body_text(box, f"Error: {self.state.error_message}", muted=False)
+        if self.dataset_state.status == DatasetStatus.ERROR and self.dataset_state.error_message:
+            body_text(box, f"Error: {self.dataset_state.error_message}", muted=False)
 
         if self.pending_df is None and not self.has_dataset:
             body_text(
@@ -559,11 +559,11 @@ class PeopleRiskApp(ctk.CTk):
             encoding = self.pending_encoding
             is_pending = True
         else:
-            df = self.state.df if self.state.df is not None else self.df
-            name = self.state.name or "dataset.csv"
-            size = self.state.file_size_bytes
-            profile = self.state.profile or profile_dataset(df, target=self.target)
-            encoding = self.state.encoding
+            df = self.dataset_state.df if self.dataset_state.df is not None else self.df
+            name = self.dataset_state.name or "dataset.csv"
+            size = self.dataset_state.file_size_bytes
+            profile = self.dataset_state.profile or profile_dataset(df, target=self.target)
+            encoding = self.dataset_state.encoding
             is_pending = False
 
         section_title(root, "Dataset preview")
@@ -625,8 +625,8 @@ class PeopleRiskApp(ctk.CTk):
         path = filedialog.askopenfilename(filetypes=[("CSV", "*.csv"), ("All", "*.*")])
         if not path:
             return
-        self.state.status = DatasetStatus.LOADING
-        self.state.error_message = ""
+        self.dataset_state.status = DatasetStatus.LOADING
+        self.dataset_state.error_message = ""
         encoding = self.encoding_var.get() or "utf-8"
         if self.upload_status_lbl:
             self.upload_status_lbl.configure(text="Loading…")
@@ -644,11 +644,11 @@ class PeopleRiskApp(ctk.CTk):
             self.pending_profile = profile
             self.pending_schema = schema
             self.encoding_var.set(used_enc)
-            self.state.status = DatasetStatus.EMPTY  # pending until confirm
+            self.dataset_state.status = DatasetStatus.EMPTY  # pending until confirm
             self.show_page("upload")
         except Exception as exc:  # noqa: BLE001
-            self.state.status = DatasetStatus.ERROR
-            self.state.error_message = str(exc)
+            self.dataset_state.status = DatasetStatus.ERROR
+            self.dataset_state.error_message = str(exc)
             self._clear_pending()
             messagebox.showerror("Lỗi CSV", str(exc))
             self.show_page("upload")
@@ -661,12 +661,12 @@ class PeopleRiskApp(ctk.CTk):
             path = self.pending_path
             encoding = self.pending_encoding
             size = self.pending_size
-        elif self.has_dataset and self.state.df is not None:
-            df = self.state.df
-            name = self.state.name or "dataset.csv"
-            path = self.state.path
-            encoding = self.state.encoding
-            size = self.state.file_size_bytes
+        elif self.has_dataset and self.dataset_state.df is not None:
+            df = self.dataset_state.df
+            name = self.dataset_state.name or "dataset.csv"
+            path = self.dataset_state.path
+            encoding = self.dataset_state.encoding
+            size = self.dataset_state.file_size_bytes
         else:
             messagebox.showwarning("Dataset", "Chưa có file để xác nhận.")
             return
@@ -680,7 +680,7 @@ class PeopleRiskApp(ctk.CTk):
 
         schema = build_schema(df, target=target)
         profile = profile_dataset(df, target=target)
-        self.state.activate(
+        self.dataset_state.activate(
             df,
             name=name,
             path=path,
@@ -699,12 +699,12 @@ class PeopleRiskApp(ctk.CTk):
         self.show_page("dashboard")
 
     def _reload_dataset(self) -> None:
-        if not self.state.path:
+        if not self.dataset_state.path:
             messagebox.showwarning("Reload", "Không có đường dẫn file để đọc lại.")
             return
-        path = self.state.path
-        encoding = self.encoding_var.get() or self.state.encoding or "utf-8"
-        self.state.status = DatasetStatus.LOADING
+        path = self.dataset_state.path
+        encoding = self.encoding_var.get() or self.dataset_state.encoding or "utf-8"
+        self.dataset_state.status = DatasetStatus.LOADING
         self.update_idletasks()
         try:
             df, used_enc = try_load_csv(path, encoding=encoding)
@@ -715,7 +715,7 @@ class PeopleRiskApp(ctk.CTk):
                 target = cands[0] if cands else (list(df.columns)[0] if len(df.columns) else None)
             schema = build_schema(df, target=target)
             profile = profile_dataset(df, target=target)
-            self.state.activate(
+            self.dataset_state.activate(
                 df,
                 name=Path(path).name,
                 path=path,
@@ -734,13 +734,13 @@ class PeopleRiskApp(ctk.CTk):
             messagebox.showinfo("Reload", f"Đã đọc lại: {Path(path).name}")
             self.show_page("upload")
         except Exception as exc:  # noqa: BLE001
-            self.state.status = DatasetStatus.ERROR
-            self.state.error_message = str(exc)
+            self.dataset_state.status = DatasetStatus.ERROR
+            self.dataset_state.error_message = str(exc)
             messagebox.showerror("Reload", str(exc))
             self.show_page("upload")
 
     def _remove_dataset(self) -> None:
-        self.state.clear()
+        self.dataset_state.clear()
         self._clear_analysis_cache()
         self._clear_pending()
         self.filter_vars.clear()
@@ -880,7 +880,7 @@ class PeopleRiskApp(ctk.CTk):
     def _page_data(self) -> None:
         root = self.content
         df = self.df
-        profile = self.state.profile or profile_dataset(df, target=self.target)
+        profile = self.dataset_state.profile or profile_dataset(df, target=self.target)
         sch = self.schema
 
         row = ctk.CTkFrame(root, fg_color="transparent")
@@ -953,7 +953,7 @@ class PeopleRiskApp(ctk.CTk):
         df = self.df
         id_col = self.schema.get("id_col")
         report = calculate_quality_score(df, id_col=id_col)
-        self.state.quality_report = report
+        self.dataset_state.quality_report = report
 
         row = ctk.CTkFrame(root, fg_color="transparent")
         row.pack(fill="x", padx=6, pady=10)
@@ -1016,14 +1016,14 @@ class PeopleRiskApp(ctk.CTk):
         primary_button(root, "Clean dataset", self._run_clean, width=180).pack(anchor="w", padx=10, pady=10)
 
     def _run_clean(self) -> None:
-        if not self.has_dataset or self.state.df is None:
+        if not self.has_dataset or self.dataset_state.df is None:
             return
         try:
-            cleaned, report = clean_dataset(self.state.df, drop_duplicates=True, save=False)
-            self.state.df_cleaned = cleaned
+            cleaned, report = clean_dataset(self.dataset_state.df, drop_duplicates=True, save=False)
+            self.dataset_state.df_cleaned = cleaned
             self._clean_report = report
             # cập nhật profile theo active df
-            self.state.profile = profile_dataset(self.df, target=self.target)
+            self.dataset_state.profile = profile_dataset(self.df, target=self.target)
             self._dataset_id = df_content_id(self.df)
             self._clear_analysis_cache()
             messagebox.showinfo(
@@ -1158,7 +1158,7 @@ class PeopleRiskApp(ctk.CTk):
         status = ctk.CTkLabel(intro, text="", font=font(11), text_color=THEME.text_muted)
         status.pack(anchor="w", padx=12)
 
-        profile = self.state.profile or {}
+        profile = self.dataset_state.profile or {}
         dt_count = profile.get("datetime_count", 0)
         if not dt_count:
             body_text(
@@ -1299,24 +1299,10 @@ class PeopleRiskApp(ctk.CTk):
             body_text(root, f"Target `{tgt}` chỉ có 1 lớp — không dự báo được.")
             return
 
-        # Ưu tiên đúng feature model đã train; không thì lấy từ dataset hiện tại
-        feature_cols: list[str] = []
-        if self.train_result and self.train_result.get("feature_columns"):
-            feature_cols = [c for c in self.train_result["feature_columns"] if c in self.df.columns]
-        if not feature_cols:
-            try:
-                meta_path = MODELS_DIR / "feature_meta.joblib"
-                if meta_path.exists():
-                    meta = joblib.load(meta_path)
-                    if meta.get("target") == tgt:
-                        feature_cols = [c for c in meta.get("feature_columns", []) if c in self.df.columns]
-            except Exception:  # noqa: BLE001
-                pass
-        if not feature_cols:
-            numeric, categorical = get_feature_columns(self.df, target=tgt)
-            feature_cols = list(numeric) + list(categorical)
-        else:
-            numeric, categorical = get_feature_columns(self.df, target=tgt)
+        # Form luôn hiển thị toàn bộ feature của dataset hiện tại.
+        # Khi chấm điểm, model vẫn chỉ nhận các cột trong feature_columns của nó.
+        numeric, categorical = get_feature_columns(self.df, target=tgt)
+        feature_cols = list(numeric) + list(categorical)
 
         numeric_set = set(numeric)
         id_col = self.schema.get("id_col") or roles.get("id")
@@ -1474,11 +1460,17 @@ class PeopleRiskApp(ctk.CTk):
         rf = MODELS_DIR / "random_forest.joblib"
         if meta_path.exists() and (lr.exists() or rf.exists()):
             meta = joblib.load(meta_path)
-            if meta.get("target") != self.target:
-                raise ValueError("Model không khớp target hiện tại — huấn luyện lại.")
-            best = meta.get("best_model_name", "Random Forest")
-            path = lr if best == "Logistic Regression" and lr.exists() else rf
-            return joblib.load(path), meta["feature_columns"], best
+            current_numeric, current_categorical = get_feature_columns(
+                self.df, target=self.target
+            )
+            current_features = current_numeric + current_categorical
+            saved_features = meta.get("feature_columns", [])
+            same_features = set(saved_features) == set(current_features)
+            target_matches = meta.get("target") in (None, self.target)
+            if same_features and target_matches:
+                best = meta.get("best_model_name", "Random Forest")
+                path = lr if best == "Logistic Regression" and lr.exists() else rf
+                return joblib.load(path), saved_features, best
         if not self.target or self.target not in self.df.columns:
             raise ValueError("No target column — cannot train.")
         if int(self.df[self.target].nunique(dropna=True)) < 2:

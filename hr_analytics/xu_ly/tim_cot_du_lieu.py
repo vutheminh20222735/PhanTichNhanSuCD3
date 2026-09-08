@@ -110,12 +110,16 @@ def detect_target_candidates(df: pd.DataFrame) -> list[str]:
 
 
 def classify_columns(df: pd.DataFrame, target: str | None = None, id_col: str | None = None) -> dict[str, list[str]]:
-    """Phân loại numeric / categorical, loại id & target."""
+    """Phân loại feature có khả năng dự báo, loại metadata và cột hằng."""
     exclude = {c for c in [target, id_col] if c}
     numeric: list[str] = []
     categorical: list[str] = []
     for col in df.columns:
         if col in exclude:
+            continue
+        series = df[col]
+        nunique = int(series.nunique(dropna=True))
+        if nunique <= 1 or _looks_like_identifier(col, series, nunique):
             continue
         if pd.api.types.is_numeric_dtype(df[col]):
             # low-cardinality numeric may still be numeric feature
@@ -123,6 +127,23 @@ def classify_columns(df: pd.DataFrame, target: str | None = None, id_col: str | 
         else:
             categorical.append(col)
     return {"numeric": numeric, "categorical": categorical}
+
+
+def _looks_like_identifier(column: str, series: pd.Series, nunique: int) -> bool:
+    """Nhận diện mã định danh không nên được dùng để dự báo nghỉ việc."""
+    normalized = "".join(ch for ch in str(column).lower() if ch.isalnum())
+    id_name = (
+        normalized in {"id", "code", "employeeid", "employeenumber", "empid"}
+        or normalized.endswith("id")
+        or normalized.endswith("code")
+        or normalized.endswith("number")
+    )
+    if id_name:
+        return True
+
+    # Cột text gần như unique thường là mã hồ sơ dù không có tên chuẩn.
+    row_count = max(len(series.dropna()), 1)
+    return not pd.api.types.is_numeric_dtype(series) and nunique / row_count >= 0.98
 
 
 def map_binary_target(y: pd.Series) -> pd.Series:

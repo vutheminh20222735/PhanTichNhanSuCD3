@@ -522,31 +522,199 @@ def primary_button(parent, text: str, command: Callable, **kwargs) -> ctk.CTkBut
     return ctk.CTkButton(parent, text=text, command=command, **kwargs)
 
 
-def option_menu(parent, values: list[str], variable=None, **kwargs) -> ctk.CTkOptionMenu:
-    """Dropdown chữ đậm, dễ đọc trên nền sáng."""
-    kwargs.setdefault("fg_color", THEME.surface)
-    kwargs.setdefault("button_color", THEME.brand)
-    kwargs.setdefault("button_hover_color", THEME.brand_soft)
-    kwargs.setdefault("text_color", THEME.text)
-    kwargs.setdefault("dropdown_fg_color", THEME.surface)
-    kwargs.setdefault("dropdown_hover_color", THEME.surface_alt)
-    kwargs.setdefault("dropdown_text_color", THEME.text)
-    kwargs.setdefault("font", font(12))
-    kwargs.setdefault("height", 30)
-    kwargs.setdefault("corner_radius", 8)
-    return ctk.CTkOptionMenu(parent, values=values or [""], variable=variable, **kwargs)
+FIELD_BORDER_FOCUS = "#2B6174"
+FIELD_HEIGHT = 28
+FIELD_RADIUS = 9
+
+
+class _FieldOptionMenu(ctk.CTkFrame):
+    """Option menu with the same border treatment as the text entry."""
+
+    def __init__(self, parent, values: list[str], variable=None, **kwargs) -> None:
+        width = kwargs.pop("width", 140)
+        height = kwargs.pop("height", FIELD_HEIGHT)
+        border_color = kwargs.pop("border_color", THEME.border)
+        kwargs.pop("border_width", None)
+
+        super().__init__(
+            parent,
+            width=width,
+            height=height,
+            fg_color=border_color,
+            corner_radius=FIELD_RADIUS,
+        )
+        self._border_color = border_color
+        self._values = list(values or [""])
+        self._popup = None
+        self._popup_scroll_bindings: list[str] = []
+        self.grid_propagate(False)
+        kwargs.setdefault("fg_color", THEME.surface)
+        kwargs.setdefault("button_color", THEME.surface)
+        kwargs.setdefault("button_hover_color", THEME.surface_alt)
+        kwargs.setdefault("text_color", THEME.text)
+        kwargs.setdefault("dropdown_fg_color", THEME.surface)
+        kwargs.setdefault("dropdown_hover_color", THEME.surface_alt)
+        kwargs.setdefault("dropdown_text_color", THEME.text)
+        kwargs.setdefault("font", font(12))
+        self._inner = ctk.CTkOptionMenu(
+            self,
+            values=self._values,
+            variable=variable,
+            width=max(1, width - 2),
+            height=max(1, height - 2),
+            corner_radius=max(1, FIELD_RADIUS - 1),
+            **kwargs,
+        )
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+        self._inner.grid(row=0, column=0, padx=1, pady=1, sticky="nsew")
+        self._inner._canvas.bind("<Button-1>", self._open_dropdown)
+        self._inner._text_label.bind("<Button-1>", self._open_dropdown)
+
+    def _focus_field(self, _event=None) -> None:
+        self.configure(fg_color=FIELD_BORDER_FOCUS)
+
+    def _open_dropdown(self, _event=None) -> None:
+        self._focus_field()
+        if self._popup is not None and self._popup.winfo_exists():
+            self._close_popup()
+            return
+
+        self.update_idletasks()
+        width = self.winfo_width()
+        x = self.winfo_rootx()
+        y = self.winfo_rooty() + self.winfo_height()
+        row_height = 40
+
+        popup = ctk.CTkToplevel(self)
+        self._popup = popup
+        popup.withdraw()
+        popup.overrideredirect(True)
+        popup.transient(self.winfo_toplevel())
+        window_scaling = popup._get_window_scaling()
+        width = max(1, round(width / window_scaling))
+        max_height = max(120, round((self.winfo_screenheight() - y - 12) / window_scaling))
+        popup_height = min(len(self._values) * row_height + 2, max_height)
+        popup.geometry(f"{width}x{popup_height}+{x}+{y}")
+        popup.configure(
+            fg_color=THEME.surface,
+            border_width=1,
+            border_color=THEME.border,
+            corner_radius=FIELD_RADIUS,
+        )
+
+        host = ctk.CTkScrollableFrame(
+            popup,
+            fg_color=THEME.surface,
+            corner_radius=FIELD_RADIUS - 1,
+            scrollbar_fg_color=THEME.surface,
+            scrollbar_button_color=THEME.border,
+            scrollbar_button_hover_color=THEME.text_muted,
+        )
+        host.pack(fill="both", expand=True, padx=1, pady=1)
+        current = self.get()
+
+        for value in self._values:
+            selected = value == current
+            ctk.CTkButton(
+                host,
+                text=value,
+                anchor="w",
+                height=row_height,
+                corner_radius=0,
+                border_width=0,
+                border_spacing=16,
+                fg_color=THEME.accent_soft if selected else THEME.surface,
+                hover_color=THEME.surface_alt,
+                text_color=THEME.brand if selected else THEME.text,
+                font=font(12, "bold" if selected else "normal"),
+                command=lambda choice=value: self._select_value(choice),
+            ).pack(fill="x", expand=True)
+
+        popup.bind("<Escape>", self._close_popup)
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self._popup_scroll_bindings.append(
+                popup.bind_class("all", sequence, self._close_popup, add="+")
+            )
+        popup.deiconify()
+        popup.lift()
+        popup.focus_force()
+
+    def _close_popup(self, _event=None) -> None:
+        if self._popup is None:
+            return
+        for sequence, binding_id in zip(
+            ("<MouseWheel>", "<Button-4>", "<Button-5>"),
+            self._popup_scroll_bindings,
+        ):
+            self._popup.unbind_class("all", sequence)
+        self._popup_scroll_bindings.clear()
+        if self._popup.winfo_exists():
+            self._popup.destroy()
+        self._popup = None
+
+    def _select_value(self, value: str) -> None:
+        self._inner.set(value)
+        command = self._inner.cget("command")
+        if command is not None:
+            command(value)
+        self._close_popup()
+
+    def configure(self, **kwargs):
+        border_color = kwargs.pop("border_color", None)
+        if border_color is not None:
+            self._border_color = border_color
+            kwargs.setdefault("fg_color", border_color)
+        if "command" in kwargs:
+            self._inner.configure(command=kwargs.pop("command"))
+        if "values" in kwargs:
+            self._values = list(kwargs.pop("values") or [""])
+            self._inner.configure(values=self._values)
+        return super().configure(**kwargs)
+
+    def cget(self, attribute_name):
+        if attribute_name == "command":
+            return self._inner.cget("command")
+        if attribute_name == "border_color":
+            return self._border_color
+        return super().cget(attribute_name)
+
+    def set(self, value: str) -> None:
+        self._inner.set(value)
+
+    def get(self) -> str:
+        return self._inner.get()
+
+
+def option_menu(parent, values: list[str], variable=None, **kwargs) -> _FieldOptionMenu:
+    """Dropdown đồng bộ viền với ô nhập liệu."""
+    kwargs.setdefault("height", FIELD_HEIGHT)
+    kwargs.setdefault("border_color", THEME.border)
+    return _FieldOptionMenu(parent, values=values, variable=variable, **kwargs)
 
 
 def text_entry(parent, textvariable=None, **kwargs) -> ctk.CTkEntry:
-    """Ô nhập chữ đậm trên nền sáng."""
+    """Ô nhập liệu dùng chung cho các form."""
     kwargs.setdefault("fg_color", THEME.surface)
+    kwargs.setdefault("border_width", 1)
     kwargs.setdefault("border_color", THEME.border)
     kwargs.setdefault("text_color", THEME.text)
     kwargs.setdefault("placeholder_text_color", THEME.text_muted)
     kwargs.setdefault("font", font(12))
-    kwargs.setdefault("height", 30)
-    kwargs.setdefault("corner_radius", 8)
-    return ctk.CTkEntry(parent, textvariable=textvariable, **kwargs)
+    kwargs.setdefault("height", FIELD_HEIGHT)
+    kwargs.setdefault("corner_radius", FIELD_RADIUS)
+    entry = ctk.CTkEntry(parent, textvariable=textvariable, **kwargs)
+    entry.bind(
+        "<FocusIn>",
+        lambda _event: entry.configure(border_color=FIELD_BORDER_FOCUS),
+        add="+",
+    )
+    entry.bind(
+        "<FocusOut>",
+        lambda _event: entry.configure(border_color=THEME.border),
+        add="+",
+    )
+    return entry
 
 
 def secondary_button(parent, text: str, command: Callable, **kwargs) -> ctk.CTkButton:
