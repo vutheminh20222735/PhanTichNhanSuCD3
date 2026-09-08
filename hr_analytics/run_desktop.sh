@@ -17,4 +17,4 @@ export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/matplotlib-hr-desktop}"
 mkdir -p "$MPLCONFIGDIR"
 
 cd "$SCRIPT_DIR"
-exec python app.py "$@"
+exec python desktop_app.py "$@"
