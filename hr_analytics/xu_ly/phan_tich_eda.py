@@ -6,8 +6,8 @@ from typing import Any
 
 import pandas as pd
 
-from src.data.schema_detector import map_binary_target
-from src.utils import format_pct, format_vnd
+from xu_ly.tim_cot_du_lieu import map_binary_target
+from xu_ly.tien_ich import format_pct, format_vnd
 
 
 def leave_mask(series: pd.Series) -> pd.Series:

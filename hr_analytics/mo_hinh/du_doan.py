@@ -6,7 +6,7 @@ from typing import Any
 
 import pandas as pd
 
-from src.utils import LEAVE_LABEL, STAY_LABEL
+from xu_ly.tien_ich import LEAVE_LABEL, STAY_LABEL
 
 
 def risk_band(probability: float) -> str:

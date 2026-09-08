@@ -1,4 +1,4 @@
-"""PeopleRisk AI — Desktop HR Analytics."""
+"""PeopleRisk AI — Desktop HR Analytics (dataset-driven)."""
 
 from __future__ import annotations
 
@@ -22,15 +22,15 @@ matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from desktop.dynamic_charts import (
+from giao_dien.ve_bieu_do import (
     chart_attrition_donut,
     chart_boxplot_by_target,
     chart_rate_by_category,
     gallery_specs,
 )
-from desktop.perf import AnalysisCache, debounce, df_content_id, filter_signature, tune_matplotlib_fast
-from desktop.theme import FILTER_ROLE_LABELS, NAV_SECTIONS, THEME
-from desktop.widgets import (
+from giao_dien.toi_uu import AnalysisCache, debounce, df_content_id, filter_signature, tune_matplotlib_fast
+from giao_dien.giao_dien_mau import FILTER_ROLE_LABELS, NAV_SECTIONS, THEME
+from giao_dien.thanh_phan import (
     ScrollableFrame,
     body_text,
     clear_frame,
@@ -50,16 +50,16 @@ from desktop.widgets import (
     show_dataframe,
     status_pill,
 )
-from src.analysis.descriptive import descriptive_statistics
-from src.analysis.dynamic_eda import compute_kpis_dynamic, run_research_questions
-from src.data.loader import load_dataset, load_uploaded_dataset
-from src.data.schema_detector import build_schema, detect_target_candidates
-from src.data.validator import validate_dataset
-from src.insights.dynamic_insights import (
-    generate_insights_dynamic,
-    generate_recommendations_dynamic,
-)
-from src.modeling.evaluate import (
+from xu_ly.thong_ke_mo_ta import descriptive_statistics
+from xu_ly.phan_tich_eda import compute_kpis_dynamic, run_research_questions
+from xu_ly.trang_thai_dataset import DatasetState, DatasetStatus
+from xu_ly.ho_so_du_lieu import format_file_size, profile_dataset, suggest_filter_columns
+from xu_ly.doc_du_lieu import COMMON_ENCODINGS, file_size_bytes, try_load_csv
+from xu_ly.diem_chat_luong import calculate_quality_score
+from xu_ly.tim_cot_du_lieu import build_schema, detect_target_candidates
+from ket_qua.tao_insight import generate_insights_dynamic
+from ket_qua.tao_khuyen_nghi import generate_recommendations_dynamic
+from mo_hinh.danh_gia import (
     evaluate_all_classifiers,
     evaluate_regression,
     get_rf_feature_importance,
@@ -67,11 +67,11 @@ from src.modeling.evaluate import (
     plot_feature_importance,
     plot_roc_curves,
 )
-from src.modeling.predict import predict_attrition
-from src.modeling.train import train_classification_models, train_salary_regression
-from src.preprocessing.cleaner import clean_dataset, detect_outliers_iqr
-from src.preprocessing.transformer import get_feature_columns
-from src.utils import DEFAULT_DATA_PATH, MODELS_DIR, apply_filters, format_vnd, format_vnd_compact
+from mo_hinh.du_doan import predict_attrition
+from mo_hinh.huan_luyen import train_classification_models, train_salary_regression
+from xu_ly.lam_sach import clean_dataset, detect_outliers_iqr
+from xu_ly.chuan_bi_du_lieu import get_feature_columns
+from xu_ly.tien_ich import MODELS_DIR, apply_filters, format_vnd, format_vnd_compact
 
 tune_matplotlib_fast()
 ctk.set_appearance_mode("light")
@@ -86,40 +86,87 @@ class PeopleRiskApp(ctk.CTk):
         self.minsize(1200, 720)
         self.configure(fg_color=THEME.bg)
 
-        # Active dataset state
-        self.df_raw = load_dataset()
-        self.dataset_name = Path(DEFAULT_DATA_PATH).name
-        self.schema = build_schema(self.df_raw)
-        self.target = self.schema["target"] or "NghiViec"
-        self.schema = build_schema(self.df_raw, target=self.target)
-        self.loaded_at = datetime.now()
-        self.is_default = True
+        self.state = DatasetState()
 
-        # Pending upload
+        # Pending upload (chưa confirm)
         self.pending_df: pd.DataFrame | None = None
         self.pending_name: str | None = None
+        self.pending_path: str | None = None
+        self.pending_encoding: str = "utf-8"
+        self.pending_size: int | None = None
+        self.pending_profile: dict | None = None
         self.pending_schema: dict | None = None
         self.pending_target_var: ctk.StringVar | None = None
+        self.encoding_var = ctk.StringVar(value="utf-8")
+        self.upload_status_lbl: ctk.CTkLabel | None = None
 
-        # Model state
-        self.train_result = None
-        self.eval_result = None
-        self.salary_eval = None
-        self.model_status = "Not trained"
-        self.filter_vars: dict[str, Any] = {}
-        self.filter_state: dict[str, str] = {}  # giữ lựa chọn khi rebuild trang
         self.predict_vars: dict[str, Any] = {}
         self.predict_step = 0
-        self.current_page = "dashboard"
+        self.filter_vars: dict[str, Any] = {}
+        self.current_page = "upload"
         self._nav_lookup = {k: (lb, h) for _, items in NAV_SECTIONS for k, lb, h in items}
         self.sidebar_dataset_lbl = None
         self.cache = AnalysisCache()
-        self._dataset_id = df_content_id(self.df_raw)
+        self._dataset_id = "empty"
         self._page_gen = 0
+        self._clean_report: dict | None = None
 
         configure_treeview_style(self)
         self._build_shell()
-        self.show_page("dashboard")
+        self.show_page("upload")
+
+    # ============================================================ PROPERTIES
+    @property
+    def df(self) -> pd.DataFrame:
+        return self.state.active_df
+
+    @property
+    def schema(self) -> dict:
+        return self.state.schema or {}
+
+    @property
+    def target(self) -> str | None:
+        return self.state.target
+
+    @property
+    def has_dataset(self) -> bool:
+        return self.state.ready
+
+    @property
+    def filter_state(self) -> dict[str, str]:
+        return self.state.filter_state
+
+    @property
+    def train_result(self):
+        return self.state.train_result
+
+    @train_result.setter
+    def train_result(self, value) -> None:
+        self.state.train_result = value
+
+    @property
+    def eval_result(self):
+        return self.state.eval_result
+
+    @eval_result.setter
+    def eval_result(self, value) -> None:
+        self.state.eval_result = value
+
+    @property
+    def salary_eval(self):
+        return self.state.salary_eval
+
+    @salary_eval.setter
+    def salary_eval(self, value) -> None:
+        self.state.salary_eval = value
+
+    @property
+    def model_status(self) -> str:
+        return self.state.model_status
+
+    @model_status.setter
+    def model_status(self, value: str) -> None:
+        self.state.model_status = value
 
     # ============================================================ SHELL
     def _build_shell(self) -> None:
@@ -201,26 +248,38 @@ class PeopleRiskApp(ctk.CTk):
         self.footer_right.pack(side="right", padx=12)
 
     def _refresh_sidebar_dataset(self) -> None:
-        n, m = self.df_raw.shape
-        txt = f"{self.dataset_name}\n{n:,} × {m}\nTarget: {self.target}"
-        if self.sidebar_dataset_lbl:
-            self.sidebar_dataset_lbl.configure(text=txt)
+        if not self.sidebar_dataset_lbl:
+            return
+        if not self.has_dataset:
+            self.sidebar_dataset_lbl.configure(text="No dataset loaded")
+            return
+        n, m = self.df.shape
+        name = self.state.name or "dataset"
+        tgt = self.target or "—"
+        self.sidebar_dataset_lbl.configure(text=f"{name}\n{n:,} × {m}\nTarget: {tgt}")
 
     def _set_header(self, key: str) -> None:
         label, hint = self._nav_lookup.get(key, ("", ""))
         self.header_label.configure(text=label)
         self.subheader_label.configure(text=hint)
-        n, m = self.df_raw.shape
-        model = self.eval_result["best_model_name"] if self.eval_result else self.model_status
-        self.status_label.configure(
-            text=f"PeopleRisk AI  ·  {self.loaded_at.strftime('%d/%m/%Y %H:%M')}"
-        )
-        self.footer_right.configure(
-            text=f"{self.dataset_name}  ·  {n:,}×{m}  ·  Target:{self.target}  ·  Model:{model}"
-        )
-        clear_frame(self.model_pill_host)
-        kind = "success" if self.eval_result else "warning"
-        status_pill(self.model_pill_host, f"Model: {model}", kind).pack()
+
+        if self.has_dataset and self.state.loaded_at:
+            loaded = self.state.loaded_at.strftime("%d/%m/%Y %H:%M")
+            n, m = self.df.shape
+            model = self.eval_result["best_model_name"] if self.eval_result else self.model_status
+            self.status_label.configure(text=f"PeopleRisk AI  ·  {loaded}")
+            self.footer_right.configure(
+                text=f"{self.state.name}  ·  {n:,}×{m}  ·  Target:{self.target}  ·  Model:{model}"
+            )
+            clear_frame(self.model_pill_host)
+            kind = "success" if self.eval_result else "warning"
+            status_pill(self.model_pill_host, f"Model: {model}", kind).pack()
+        else:
+            st = self.state.status.value if self.state.status else "empty"
+            self.status_label.configure(text=f"PeopleRisk AI  ·  status: {st}")
+            self.footer_right.configure(text="No dataset loaded")
+            clear_frame(self.model_pill_host)
+            status_pill(self.model_pill_host, "No dataset", "warning").pack()
 
     def _highlight(self, key: str) -> None:
         for k, btn in self.nav_buttons.items():
@@ -236,6 +295,11 @@ class PeopleRiskApp(ctk.CTk):
         self._set_header(key)
         clear_frame(self.content)
         plt.close("all")
+
+        if key != "upload" and not self.has_dataset:
+            self._page_need_dataset()
+            return
+
         {
             "dashboard": self._page_dashboard,
             "data": self._page_data,
@@ -248,6 +312,15 @@ class PeopleRiskApp(ctk.CTk):
             "insights": self._page_insights,
             "recs": self._page_recs,
         }[key]()
+
+    def _page_need_dataset(self) -> None:
+        root = self.content
+        box = panel(root, "Dataset required", "No dataset loaded")
+        box.pack(fill="x", padx=12, pady=40)
+        body_text(box, "Upload a CSV dataset to start HR Analytics.")
+        primary_button(
+            box, "Go to Dataset Import", lambda: self.show_page("upload"), width=220
+        ).pack(anchor="w", padx=12, pady=14)
 
     def _defer(self, delay_ms: int, fn) -> None:
         """Chạy fn sau delay; bỏ qua nếu đã đổi trang."""
@@ -271,7 +344,7 @@ class PeopleRiskApp(ctk.CTk):
         hit = self.cache.get(key)
         if hit is not None:
             return hit
-        roles = self.schema["roles"]
+        roles = self.schema.get("roles") or {}
         return self.cache.set(key, generate_insights_dynamic(df, roles, self.target))
 
     def _cached_kpis(self, df: pd.DataFrame):
@@ -279,46 +352,38 @@ class PeopleRiskApp(ctk.CTk):
         hit = self.cache.get(key)
         if hit is not None:
             return hit
-        return self.cache.set(key, compute_kpis_dynamic(df, self.schema["roles"], self.target))
+        return self.cache.set(key, compute_kpis_dynamic(df, self.schema.get("roles") or {}, self.target))
 
     def _cached_rq(self, df: pd.DataFrame):
         key = self.cache.key("rq", self._dataset_id, self.target, len(df), self._filter_sig())
         hit = self.cache.get(key)
         if hit is not None:
             return hit
-        return self.cache.set(key, run_research_questions(df, self.schema["roles"], self.target))
+        return self.cache.set(key, run_research_questions(df, self.schema.get("roles") or {}, self.target))
 
     def _refresh(self) -> None:
-        self.loaded_at = datetime.now()
         self.show_page(self.current_page)
 
-    def _clear_model_state(self) -> None:
-        self.train_result = self.eval_result = self.salary_eval = None
-        self.model_status = "Not trained"
+    def _clear_analysis_cache(self) -> None:
         self.cache.clear()
+        self.state.cache_store.clear()
 
-    def _activate_dataset(self, df: pd.DataFrame, name: str, target: str, is_default: bool = False) -> None:
-        if target not in df.columns:
-            messagebox.showerror("Target", f"Cột target `{target}` không tồn tại.")
-            return
-        self.df_raw = df
-        self.dataset_name = name
-        self.target = target
-        self.schema = build_schema(df, target=target)
-        self.is_default = is_default
-        self.loaded_at = datetime.now()
-        self._dataset_id = df_content_id(df)
-        self._clear_model_state()
-        self.filter_vars.clear()
-        self.filter_state.clear()
+    def _clear_pending(self) -> None:
         self.pending_df = None
-        self._refresh_sidebar_dataset()
-        messagebox.showinfo("Dataset", f"Đã kích hoạt: {name}\nTarget: {target}")
-        self.show_page("dashboard")
+        self.pending_name = None
+        self.pending_path = None
+        self.pending_encoding = "utf-8"
+        self.pending_size = None
+        self.pending_profile = None
+        self.pending_schema = None
+        self.pending_target_var = None
+        self._clean_report = None
 
     # ============================================================ FILTERS
     def _draw_filters(self, on_change) -> None:
-        cols = [c for c in (self.schema.get("filter_columns") or []) if c in self.df_raw.columns]
+        if not self.has_dataset:
+            return
+        cols = [c for c in suggest_filter_columns(self.df, self.schema) if c in self.df.columns]
         if not cols:
             return
 
@@ -347,7 +412,7 @@ class PeopleRiskApp(ctk.CTk):
             label = FILTER_ROLE_LABELS.get(role_of.get(col, ""), col)
             ctk.CTkLabel(cell, text=label, font=font(9), text_color=THEME.text_muted).pack(anchor="w")
             opts = ["Tất cả"] + sorted(
-                {str(x) for x in self.df_raw[col].dropna().tolist()}, key=str
+                {str(x) for x in self.df[col].dropna().tolist()}, key=str
             )
             current = str(saved.get(col, "Tất cả"))
             if current not in opts:
@@ -372,7 +437,6 @@ class PeopleRiskApp(ctk.CTk):
         secondary_button(inner, "Xóa lọc", self._clear_filters, width=88, height=28).pack(
             side="right", padx=4, pady=(12, 0)
         )
-        # Bật sau 1 tick — tránh OptionMenu gọi command lúc khởi tạo
         self.after(50, lambda: setattr(self, "_filters_ready", True))
 
     def _clear_filters(self) -> None:
@@ -381,15 +445,16 @@ class PeopleRiskApp(ctk.CTk):
         self.show_page(self.current_page)
 
     def _active_filters(self) -> dict[str, str]:
-        """Các lọc đang có hiệu lực (bỏ 'Tất cả')."""
+        if not self.has_dataset:
+            return {}
         return {
             c: str(v)
             for c, v in self.filter_state.items()
-            if str(v).strip() and str(v) != "Tất cả" and c in self.df_raw.columns
+            if str(v).strip() and str(v) != "Tất cả" and c in self.df.columns
         }
 
     def _filtered(self) -> pd.DataFrame:
-        return apply_filters(self.df_raw, self._active_filters())
+        return apply_filters(self.df, self._active_filters())
 
     def _filter_caption(self, df: pd.DataFrame) -> None:
         active = self._active_filters()
@@ -405,11 +470,14 @@ class PeopleRiskApp(ctk.CTk):
             detail = "không lọc"
         body_text(
             self.content,
-            f"Đang phân tích {len(df):,} / {len(self.df_raw):,} nhân viên  ·  {detail}  ·  {self.dataset_name}",
+            f"Đang phân tích {len(df):,} / {len(self.df):,} nhân viên  ·  {detail}  ·  {self.state.name}",
             muted=True,
         )
 
     def _export(self) -> None:
+        if not self.has_dataset:
+            messagebox.showwarning("Xuất báo cáo", "No dataset loaded")
+            return
         path = filedialog.asksaveasfilename(
             defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")],
             initialfile=f"PeopleRisk_{datetime.now():%Y%m%d_%H%M}.xlsx",
@@ -418,7 +486,7 @@ class PeopleRiskApp(ctk.CTk):
             return
         try:
             df = self._filtered()
-            roles = self.schema["roles"]
+            roles = self.schema.get("roles") or {}
             kpis = compute_kpis_dynamic(df, roles, self.target)
             insights = generate_insights_dynamic(df, roles, self.target)
             recs = generate_recommendations_dynamic(insights)
@@ -432,6 +500,253 @@ class PeopleRiskApp(ctk.CTk):
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Lỗi", str(exc))
 
+    # ============================================================ UPLOAD
+    def _page_upload(self) -> None:
+        root = self.content
+        status = self.state.status.value
+        if self.pending_df is not None:
+            status = "loading" if self.state.status == DatasetStatus.LOADING else "preview"
+        elif self.has_dataset:
+            status = "ready"
+
+        box = panel(root, "Nhập Dataset", f"Status: {status}")
+        box.pack(fill="x", padx=8, pady=10)
+
+        enc_row = ctk.CTkFrame(box, fg_color="transparent")
+        enc_row.pack(fill="x", padx=12, pady=(8, 4))
+        ctk.CTkLabel(enc_row, text="Encoding", font=font(11, "bold"), text_color=THEME.text_muted).pack(
+            side="left", padx=(0, 8)
+        )
+        ctk.CTkOptionMenu(
+            enc_row,
+            values=list(COMMON_ENCODINGS),
+            variable=self.encoding_var,
+            width=140,
+            height=30,
+        ).pack(side="left")
+
+        btns = ctk.CTkFrame(box, fg_color="transparent")
+        btns.pack(padx=12, pady=8, anchor="w")
+        primary_button(btns, "Chọn file CSV", self._pick_csv, width=160).pack(side="left", padx=4)
+        if self.has_dataset and self.state.path:
+            secondary_button(btns, "Reload Dataset", self._reload_dataset, width=150).pack(side="left", padx=4)
+        if self.has_dataset or self.pending_df is not None:
+            secondary_button(btns, "Remove Dataset", self._remove_dataset, width=150).pack(side="left", padx=4)
+
+        self.upload_status_lbl = ctk.CTkLabel(
+            box, text="", font=font(11), text_color=THEME.text_muted, justify="left"
+        )
+        self.upload_status_lbl.pack(anchor="w", padx=12, pady=(0, 8))
+
+        if self.state.status == DatasetStatus.ERROR and self.state.error_message:
+            body_text(box, f"Error: {self.state.error_message}", muted=False)
+
+        if self.pending_df is None and not self.has_dataset:
+            body_text(
+                root,
+                "No dataset loaded. Chọn file CSV để bắt đầu phân tích HR.",
+                muted=True,
+            )
+            return
+
+        # Hiển thị preview từ pending, hoặc dataset đang active
+        if self.pending_df is not None:
+            df = self.pending_df
+            name = self.pending_name or "upload.csv"
+            size = self.pending_size
+            profile = self.pending_profile or profile_dataset(df)
+            encoding = self.pending_encoding
+            is_pending = True
+        else:
+            df = self.state.df if self.state.df is not None else self.df
+            name = self.state.name or "dataset.csv"
+            size = self.state.file_size_bytes
+            profile = self.state.profile or profile_dataset(df, target=self.target)
+            encoding = self.state.encoding
+            is_pending = False
+
+        section_title(root, "Dataset preview")
+        info = ctk.CTkFrame(root, fg_color="transparent")
+        info.pack(fill="x", padx=4)
+        for i in range(4):
+            info.grid_columnconfigure(i, weight=1)
+        make_kpi_card(info, "File", name, tone="brand").grid(row=0, column=0, sticky="nsew", padx=3)
+        make_kpi_card(info, "Size", format_file_size(size), tone="accent").grid(row=0, column=1, sticky="nsew", padx=3)
+        make_kpi_card(info, "Rows", f"{profile.get('row_count', len(df)):,}", tone="info").grid(
+            row=0, column=2, sticky="nsew", padx=3
+        )
+        make_kpi_card(info, "Columns", f"{profile.get('column_count', df.shape[1])}", tone="warning").grid(
+            row=0, column=3, sticky="nsew", padx=3
+        )
+        body_text(root, f"Encoding: {encoding}", muted=True)
+
+        section_title(root, "Columns & dtypes")
+        cols_meta = profile.get("columns") or []
+        if cols_meta:
+            show_dataframe(root, pd.DataFrame(cols_meta), height=180, page_size=10, enable_search=True)
+        else:
+            show_dataframe(
+                root,
+                pd.DataFrame({"Column": df.columns, "Dtype": [str(df[c].dtype) for c in df.columns]}),
+                height=160,
+                page_size=10,
+            )
+
+        candidates = profile.get("target_candidates") or detect_target_candidates(df)
+        suggested = ", ".join(candidates[:5]) if candidates else "—"
+        section_title(root, "Chọn biến mục tiêu (Target)")
+        body_text(root, f"Suggested targets: {suggested}", muted=True)
+        all_cols = list(df.columns)
+        default_tgt = (
+            (self.target if self.target in all_cols else None)
+            or (candidates[0] if candidates else None)
+            or (all_cols[0] if all_cols else "")
+        )
+        self.pending_target_var = ctk.StringVar(value=str(default_tgt))
+        ctk.CTkOptionMenu(
+            root, values=all_cols or [""], variable=self.pending_target_var, width=280, height=34
+        ).pack(anchor="w", padx=12, pady=6)
+
+        section_title(root, "Preview (15 rows)")
+        show_dataframe(root, df.head(15), height=200, page_size=10)
+
+        if is_pending:
+            primary_button(root, "Confirm Dataset", self._confirm_pending, width=200).pack(
+                anchor="w", padx=12, pady=14
+            )
+        elif self.has_dataset:
+            body_text(root, f"Dataset sẵn sàng · Target: {self.target}", muted=True)
+            primary_button(root, "Confirm Dataset", self._confirm_pending, width=200).pack(
+                anchor="w", padx=12, pady=14
+            )
+
+    def _pick_csv(self) -> None:
+        path = filedialog.askopenfilename(filetypes=[("CSV", "*.csv"), ("All", "*.*")])
+        if not path:
+            return
+        self.state.status = DatasetStatus.LOADING
+        self.state.error_message = ""
+        encoding = self.encoding_var.get() or "utf-8"
+        if self.upload_status_lbl:
+            self.upload_status_lbl.configure(text="Loading…")
+        self.update_idletasks()
+        try:
+            df, used_enc = try_load_csv(path, encoding=encoding)
+            size = file_size_bytes(path)
+            profile = profile_dataset(df)
+            schema = build_schema(df)
+            self.pending_df = df
+            self.pending_name = Path(path).name
+            self.pending_path = path
+            self.pending_encoding = used_enc
+            self.pending_size = size
+            self.pending_profile = profile
+            self.pending_schema = schema
+            self.encoding_var.set(used_enc)
+            self.state.status = DatasetStatus.EMPTY  # pending until confirm
+            self.show_page("upload")
+        except Exception as exc:  # noqa: BLE001
+            self.state.status = DatasetStatus.ERROR
+            self.state.error_message = str(exc)
+            self._clear_pending()
+            messagebox.showerror("Lỗi CSV", str(exc))
+            self.show_page("upload")
+
+    def _confirm_pending(self) -> None:
+        # Confirm từ pending hoặc re-confirm target trên dataset hiện tại
+        if self.pending_df is not None:
+            df = self.pending_df
+            name = self.pending_name or "upload.csv"
+            path = self.pending_path
+            encoding = self.pending_encoding
+            size = self.pending_size
+        elif self.has_dataset and self.state.df is not None:
+            df = self.state.df
+            name = self.state.name or "dataset.csv"
+            path = self.state.path
+            encoding = self.state.encoding
+            size = self.state.file_size_bytes
+        else:
+            messagebox.showwarning("Dataset", "Chưa có file để xác nhận.")
+            return
+
+        if self.pending_target_var is None:
+            return
+        target = self.pending_target_var.get()
+        if not target or target not in df.columns:
+            messagebox.showerror("Target", f"Cột target `{target}` không tồn tại.")
+            return
+
+        schema = build_schema(df, target=target)
+        profile = profile_dataset(df, target=target)
+        self.state.activate(
+            df,
+            name=name,
+            path=path,
+            encoding=encoding,
+            file_size_bytes=size,
+            schema=schema,
+            target=target,
+            profile=profile,
+        )
+        self._dataset_id = df_content_id(df)
+        self._clear_analysis_cache()
+        self._clear_pending()
+        self.filter_vars.clear()
+        self._refresh_sidebar_dataset()
+        messagebox.showinfo("Dataset", f"Đã kích hoạt: {name}\nTarget: {target}")
+        self.show_page("dashboard")
+
+    def _reload_dataset(self) -> None:
+        if not self.state.path:
+            messagebox.showwarning("Reload", "Không có đường dẫn file để đọc lại.")
+            return
+        path = self.state.path
+        encoding = self.encoding_var.get() or self.state.encoding or "utf-8"
+        self.state.status = DatasetStatus.LOADING
+        self.update_idletasks()
+        try:
+            df, used_enc = try_load_csv(path, encoding=encoding)
+            size = file_size_bytes(path)
+            target = self.target if self.target in df.columns else None
+            if target is None:
+                cands = detect_target_candidates(df)
+                target = cands[0] if cands else (list(df.columns)[0] if len(df.columns) else None)
+            schema = build_schema(df, target=target)
+            profile = profile_dataset(df, target=target)
+            self.state.activate(
+                df,
+                name=Path(path).name,
+                path=path,
+                encoding=used_enc,
+                file_size_bytes=size,
+                schema=schema,
+                target=target,
+                profile=profile,
+            )
+            self._dataset_id = df_content_id(df)
+            self._clear_analysis_cache()
+            self._clear_pending()
+            self.filter_vars.clear()
+            self.encoding_var.set(used_enc)
+            self._refresh_sidebar_dataset()
+            messagebox.showinfo("Reload", f"Đã đọc lại: {Path(path).name}")
+            self.show_page("upload")
+        except Exception as exc:  # noqa: BLE001
+            self.state.status = DatasetStatus.ERROR
+            self.state.error_message = str(exc)
+            messagebox.showerror("Reload", str(exc))
+            self.show_page("upload")
+
+    def _remove_dataset(self) -> None:
+        self.state.clear()
+        self._clear_analysis_cache()
+        self._clear_pending()
+        self.filter_vars.clear()
+        self._dataset_id = "empty"
+        self._refresh_sidebar_dataset()
+        self.show_page("upload")
+
     # ============================================================ DASHBOARD
     def _page_dashboard(self) -> None:
         root = self.content
@@ -441,7 +756,7 @@ class PeopleRiskApp(ctk.CTk):
         if df.empty:
             body_text(root, "Không còn bản ghi sau khi lọc.")
             return
-        roles = self.schema["roles"]
+        roles = self.schema.get("roles") or {}
         kpis = self._cached_kpis(df)
 
         row1 = ctk.CTkFrame(root, fg_color="transparent")
@@ -458,8 +773,10 @@ class PeopleRiskApp(ctk.CTk):
         extras = []
         if kpis.get("avg_age") is not None:
             extras.append(("Tuổi TB", f"{kpis['avg_age']:.1f}", "năm", "info"))
-        if kpis.get("avg_income") is not None:
-            extras.append(("Thu nhập TB", format_vnd_compact(kpis["avg_income"]), format_vnd(kpis["avg_income"])+"/tháng", "accent"))
+        if roles.get("income") and kpis.get("avg_income") is not None:
+            extras.append(("Thu nhập TB", format_vnd_compact(kpis["avg_income"]), format_vnd(kpis["avg_income"]) + "/tháng", "accent"))
+        elif not roles.get("income"):
+            extras.append(("Thu nhập TB", "N/A", "no salary column", "warning"))
         if kpis.get("avg_years_company") is not None:
             extras.append(("Thâm niên TB", f"{kpis['avg_years_company']:.2f} năm", "tại công ty", "brand"))
         if kpis.get("avg_job_satisfaction") is not None:
@@ -468,6 +785,9 @@ class PeopleRiskApp(ctk.CTk):
             row2.grid_columnconfigure(i, weight=1)
         for i, (t, v, s, tone) in enumerate(extras):
             make_kpi_card(row2, t, v, s, tone).grid(row=0, column=i, sticky="nsew", padx=3)
+
+        if not roles.get("income"):
+            body_text(root, "Salary analysis unavailable — no salary column detected.", muted=True)
 
         section_title(root, "Employee Attrition Overview")
         g = ctk.CTkFrame(root, fg_color="transparent")
@@ -484,19 +804,23 @@ class PeopleRiskApp(ctk.CTk):
         loading_r.pack(pady=40)
 
         dept = roles.get("department")
+        tgt = self.target
 
         def _draw_left() -> None:
             loading_l.destroy()
-            fig, note, err = safe_chart(lambda: chart_attrition_donut(df, self.target))
+            if not tgt or tgt not in df.columns:
+                body_text(L, "Không có cột target để vẽ attrition.", muted=True)
+                return
+            fig, note, err = safe_chart(lambda: chart_attrition_donut(df, tgt))
             embed_figure(L, fig, 240, "Active vs Left", note, err)
             if fig:
                 plt.close(fig)
 
         def _draw_right() -> None:
             loading_r.destroy()
-            if dept:
+            if dept and tgt:
                 fig, note, err = safe_chart(
-                    lambda: chart_rate_by_category(df, dept, self.target, "Attrition by Department")
+                    lambda: chart_rate_by_category(df, dept, tgt, "Attrition by Department")
                 )
                 embed_figure(R, fig, 240, "Theo phòng ban", note, err)
                 if fig:
@@ -507,7 +831,6 @@ class PeopleRiskApp(ctk.CTk):
         self._defer(10, _draw_left)
         self._defer(60, _draw_right)
 
-        # Insights + model: defer nhẹ để KPI hiện trước
         rest = ctk.CTkFrame(root, fg_color="transparent")
         rest.pack(fill="x", padx=2, pady=4)
 
@@ -555,157 +878,162 @@ class PeopleRiskApp(ctk.CTk):
     # ============================================================ DATA
     def _page_data(self) -> None:
         root = self.content
+        df = self.df
+        profile = self.state.profile or profile_dataset(df, target=self.target)
         sch = self.schema
+
         row = ctk.CTkFrame(root, fg_color="transparent")
         row.pack(fill="x", padx=4, pady=6)
         for i in range(4):
             row.grid_columnconfigure(i, weight=1)
-        make_kpi_card(row, "Records", f"{sch['n_rows']:,}", tone="brand").grid(row=0, column=0, sticky="nsew", padx=3)
-        make_kpi_card(row, "Variables", f"{sch['n_cols']}", tone="accent").grid(row=0, column=1, sticky="nsew", padx=3)
-        make_kpi_card(row, "Numeric", f"{sch['n_numeric']}", tone="info").grid(row=0, column=2, sticky="nsew", padx=3)
-        make_kpi_card(row, "Categorical", f"{sch['n_categorical']}", tone="warning").grid(row=0, column=3, sticky="nsew", padx=3)
+        make_kpi_card(row, "Records", f"{profile.get('row_count', len(df)):,}", tone="brand").grid(
+            row=0, column=0, sticky="nsew", padx=3
+        )
+        make_kpi_card(row, "Variables", f"{profile.get('column_count', df.shape[1])}", tone="accent").grid(
+            row=0, column=1, sticky="nsew", padx=3
+        )
+        make_kpi_card(row, "Numeric", f"{profile.get('numeric_count', sch.get('n_numeric', 0))}", tone="info").grid(
+            row=0, column=2, sticky="nsew", padx=3
+        )
+        make_kpi_card(
+            row, "Categorical", f"{profile.get('categorical_count', sch.get('n_categorical', 0))}", tone="warning"
+        ).grid(row=0, column=3, sticky="nsew", padx=3)
 
         row2 = ctk.CTkFrame(root, fg_color="transparent")
         row2.pack(fill="x", padx=4, pady=2)
-        for i in range(3):
+        for i in range(4):
             row2.grid_columnconfigure(i, weight=1)
-        make_kpi_card(row2, "Missing", str(sch["missing_total"]), "Good" if sch["missing_total"] == 0 else "Check", "success" if sch["missing_total"] == 0 else "warning").grid(row=0, column=0, sticky="nsew", padx=3)
-        make_kpi_card(row2, "Duplicate", str(sch["duplicate_total"]), "Good" if sch["duplicate_total"] == 0 else "Check", "success" if sch["duplicate_total"] == 0 else "warning").grid(row=0, column=1, sticky="nsew", padx=3)
-        make_kpi_card(row2, "Target", str(self.target), "Confirmed", "accent").grid(row=0, column=2, sticky="nsew", padx=3)
+        miss = profile.get("missing_cells", sch.get("missing_total", 0))
+        dup = profile.get("duplicate_rows", sch.get("duplicate_total", 0))
+        make_kpi_card(
+            row2, "Missing", str(miss), "Good" if miss == 0 else "Check",
+            "success" if miss == 0 else "warning",
+        ).grid(row=0, column=0, sticky="nsew", padx=3)
+        make_kpi_card(
+            row2, "Duplicate", str(dup), "Good" if dup == 0 else "Check",
+            "success" if dup == 0 else "warning",
+        ).grid(row=0, column=1, sticky="nsew", padx=3)
+        make_kpi_card(row2, "Target", str(self.target or "—"), "Confirmed", "accent").grid(
+            row=0, column=2, sticky="nsew", padx=3
+        )
+        make_kpi_card(
+            row2, "Datetime", str(profile.get("datetime_count", 0)), "profile", "info"
+        ).grid(row=0, column=3, sticky="nsew", padx=3)
 
         section_title(root, "Data Dictionary")
-        rows = []
-        for col in self.df_raw.columns:
-            role = "Target" if col == self.target else ("ID" if col == sch.get("id_col") else "Feature")
-            rows.append({
-                "Column": col,
-                "Data Type": str(self.df_raw[col].dtype),
-                "Non-null": int(self.df_raw[col].notna().sum()),
-                "Null": int(self.df_raw[col].isna().sum()),
-                "Unique": int(self.df_raw[col].nunique()),
-                "Role": role,
-            })
-        show_dataframe(root, pd.DataFrame(rows), height=240, page_size=12, enable_search=True)
+        cols_meta = profile.get("columns")
+        if cols_meta:
+            rows = []
+            for meta in cols_meta:
+                col = meta["Column"]
+                role = "Target" if col == self.target else ("ID" if col == sch.get("id_col") else "Feature")
+                rows.append({**meta, "Role": role})
+            show_dataframe(root, pd.DataFrame(rows), height=240, page_size=12, enable_search=True)
+        else:
+            rows = []
+            for col in df.columns:
+                role = "Target" if col == self.target else ("ID" if col == sch.get("id_col") else "Feature")
+                rows.append({
+                    "Column": col,
+                    "Data Type": str(df[col].dtype),
+                    "Non-null": int(df[col].notna().sum()),
+                    "Null": int(df[col].isna().sum()),
+                    "Unique": int(df[col].nunique()),
+                    "Role": role,
+                })
+            show_dataframe(root, pd.DataFrame(rows), height=240, page_size=12, enable_search=True)
+
         section_title(root, "Sample Data (20 dòng)")
-        show_dataframe(root, self.df_raw.head(20), height=220, page_size=10, enable_search=True)
-
-    # ============================================================ UPLOAD
-    def _page_upload(self) -> None:
-        root = self.content
-        box = panel(root, "Nhập dataset", "Chọn file CSV hoặc dùng bộ dữ liệu mẫu")
-        box.pack(fill="x", padx=8, pady=10)
-
-        btns = ctk.CTkFrame(box, fg_color="transparent")
-        btns.pack(padx=12, pady=12, anchor="w")
-        primary_button(btns, "Chọn file CSV", self._pick_csv, width=160).pack(side="left", padx=4)
-        secondary_button(btns, "Sử dụng dataset mẫu", self._use_default, width=180).pack(side="left", padx=4)
-
-        if self.pending_df is None:
-            body_text(
-                root,
-                f"Đang dùng: {self.dataset_name} ({len(self.df_raw):,}×{self.df_raw.shape[1]})",
-                muted=True,
-            )
-            return
-
-        sch = self.pending_schema or build_schema(self.pending_df)
-        section_title(root, "Phân tích Dataset đã tải")
-        info = ctk.CTkFrame(root, fg_color="transparent")
-        info.pack(fill="x", padx=4)
-        for i in range(4):
-            info.grid_columnconfigure(i, weight=1)
-        make_kpi_card(info, "File", self.pending_name or "", tone="brand").grid(row=0, column=0, sticky="nsew", padx=3)
-        make_kpi_card(info, "Records", f"{sch['n_rows']:,}", tone="accent").grid(row=0, column=1, sticky="nsew", padx=3)
-        make_kpi_card(info, "Variables", f"{sch['n_cols']}", tone="info").grid(row=0, column=2, sticky="nsew", padx=3)
-        make_kpi_card(info, "Missing / Dup", f"{sch['missing_total']} / {sch['duplicate_total']}", tone="success").grid(row=0, column=3, sticky="nsew", padx=3)
-
-        make_kpi_card(info, "Numeric", f"{sch['n_numeric']}", tone="brand").grid(row=1, column=0, sticky="nsew", padx=3, pady=4)
-        make_kpi_card(info, "Categorical", f"{sch['n_categorical']}", tone="accent").grid(row=1, column=1, sticky="nsew", padx=3, pady=4)
-
-        candidates = sch.get("target_candidates") or detect_target_candidates(self.pending_df)
-        section_title(root, "Chọn biến mục tiêu (Target)")
-        if not candidates:
-            body_text(root, "Không tìm thấy cột mục tiêu phù hợp — chọn thủ công.")
-            candidates = list(self.pending_df.columns)
-        self.pending_target_var = ctk.StringVar(value=candidates[0])
-        ctk.CTkOptionMenu(
-            root, values=candidates, variable=self.pending_target_var, width=280, height=34
-        ).pack(anchor="w", padx=12, pady=6)
-
-        section_title(root, "Preview")
-        show_dataframe(root, self.pending_df.head(15), height=200, page_size=10)
-
-        primary_button(root, "Xác nhận Dataset", self._confirm_pending, width=200).pack(
-            anchor="w", padx=12, pady=14
-        )
-
-    def _pick_csv(self) -> None:
-        path = filedialog.askopenfilename(filetypes=[("CSV", "*.csv"), ("All", "*.*")])
-        if not path:
-            return
-        try:
-            df = load_uploaded_dataset(path)
-            if df.shape[1] < 2:
-                messagebox.showerror("Dataset", "Dataset cần ít nhất 2 cột.")
-                return
-            self.pending_df = df
-            self.pending_name = Path(path).name
-            self.pending_schema = build_schema(df)
-            self.show_page("upload")
-        except Exception as exc:  # noqa: BLE001
-            messagebox.showerror("Lỗi CSV", str(exc))
-
-    def _use_default(self) -> None:
-        df = load_dataset()
-        sch = build_schema(df)
-        self._activate_dataset(df, Path(DEFAULT_DATA_PATH).name, sch["target"] or list(df.columns)[-1], True)
-
-    def _confirm_pending(self) -> None:
-        if self.pending_df is None or self.pending_target_var is None:
-            return
-        target = self.pending_target_var.get()
-        self._activate_dataset(self.pending_df, self.pending_name or "upload.csv", target, False)
+        show_dataframe(root, df.head(20), height=220, page_size=10, enable_search=True)
 
     # ============================================================ QUALITY
     def _page_quality(self) -> None:
         root = self.content
-        validation = validate_dataset(self.df_raw)
-        missing = validation["total_missing"]
-        dup = validation["duplicates"]["duplicate_count"]
-        inv = int(validation["invalid_numeric"]["Invalid Count"].sum())
-        outliers = detect_outliers_iqr(self.df_raw)
-        out_n = int(outliers["Outlier Count"].sum()) if not outliers.empty else 0
-        # Quality score simple
-        score = 100.0
-        if len(self.df_raw):
-            score -= min(40, missing / len(self.df_raw) * 100)
-            score -= min(30, dup / len(self.df_raw) * 100)
-            score -= min(20, inv / max(len(self.df_raw), 1) * 5)
-        score = max(0, round(score, 1))
-        label = "Excellent" if score >= 95 else ("Good" if score >= 80 else "Needs attention")
+        df = self.df
+        id_col = self.schema.get("id_col")
+        report = calculate_quality_score(df, id_col=id_col)
+        self.state.quality_report = report
 
         row = ctk.CTkFrame(root, fg_color="transparent")
         row.pack(fill="x", padx=6, pady=10)
-        quality_status_card(row, "Missing", missing, "0 Missing").pack(side="left", padx=6)
-        quality_status_card(row, "Duplicate", dup, "0 Duplicate").pack(side="left", padx=6)
-        quality_status_card(row, "Invalid", inv, "0 Invalid").pack(side="left", padx=6)
-        qcard = ctk.CTkFrame(row, fg_color=THEME.success_soft if score >= 95 else THEME.warning_soft, corner_radius=10, width=180, height=88)
-        qcard.pack(side="left", padx=6)
-        qcard.pack_propagate(False)
-        ctk.CTkLabel(qcard, text=f"Quality\n{score}%\n{label}", font=font(13, "bold"),
-                     text_color=THEME.success if score >= 95 else THEME.warning).pack(expand=True)
+        for i, (label, key) in enumerate([
+            ("Completeness", "completeness"),
+            ("Consistency", "consistency"),
+            ("Validity", "validity"),
+            ("Uniqueness", "uniqueness"),
+        ]):
+            row.grid_columnconfigure(i, weight=1)
+            make_kpi_card(row, label, f"{report[key]:.1f}%", report["label"], "brand").grid(
+                row=0, column=i, sticky="nsew", padx=3
+            )
 
-        body_text(root, validation["missing_message"], muted=True)
-        body_text(root, validation["duplicates"]["message"], muted=True)
+        score = report["score"]
+        qcard = ctk.CTkFrame(
+            root,
+            fg_color=THEME.success_soft if score >= 90 else THEME.warning_soft,
+            corner_radius=10,
+            height=72,
+        )
+        qcard.pack(fill="x", padx=8, pady=6)
+        ctk.CTkLabel(
+            qcard,
+            text=f"Quality Score: {score}% — {report['label']}  ·  {report.get('message', '')}",
+            font=font(13, "bold"),
+            text_color=THEME.success if score >= 90 else THEME.warning,
+        ).pack(padx=12, pady=16, anchor="w")
+
+        status_row = ctk.CTkFrame(root, fg_color="transparent")
+        status_row.pack(fill="x", padx=6, pady=4)
+        quality_status_card(status_row, "Missing", report.get("missing", 0), "0 Missing").pack(side="left", padx=6)
+        quality_status_card(status_row, "Duplicate", report.get("duplicates", 0), "0 Duplicate").pack(side="left", padx=6)
+
+        section_title(root, "Issues")
+        issues = report.get("issues") or []
+        if not issues:
+            body_text(root, "Không phát hiện vấn đề chất lượng đáng kể.", muted=True)
+        else:
+            for iss in issues:
+                body_text(root, f"• {iss}")
+
         section_title(root, "Outlier IQR (không tự xóa)")
+        outliers = report.get("outliers")
+        if outliers is None or (isinstance(outliers, pd.DataFrame) and outliers.empty):
+            outliers = detect_outliers_iqr(df)
         show_dataframe(root, outliers, height=160, page_size=8)
-        section_title(root, "Invalid numeric")
-        show_dataframe(root, validation["invalid_numeric"], height=160, page_size=10)
-        primary_button(root, "Chạy làm sạch & lưu processed", self._run_clean).pack(anchor="w", padx=10, pady=10)
+
+        if self._clean_report:
+            section_title(root, "Clean result (before → after)")
+            cr = self._clean_report
+            body_text(
+                root,
+                f"Rows {cr.get('rows_before')} → {cr.get('rows_after')}  ·  "
+                f"Cols {cr.get('cols_before')} → {cr.get('cols_after', cr.get('cols_before'))}  ·  "
+                f"Missing {cr.get('missing_before')} → {cr.get('missing_after')}  ·  "
+                f"Dups {cr.get('duplicates_before')} → {cr.get('duplicates_after')}",
+            )
+
+        primary_button(root, "Clean dataset", self._run_clean, width=180).pack(anchor="w", padx=10, pady=10)
 
     def _run_clean(self) -> None:
-        _, report = clean_dataset(self.df_raw, drop_duplicates=True, save=True)
-        messagebox.showinfo("Clean", f"Rows {report['rows_before']}→{report['rows_after']}\n{report.get('saved_path','')}")
+        if not self.has_dataset or self.state.df is None:
+            return
+        try:
+            cleaned, report = clean_dataset(self.state.df, drop_duplicates=True, save=False)
+            self.state.df_cleaned = cleaned
+            self._clean_report = report
+            # cập nhật profile theo active df
+            self.state.profile = profile_dataset(self.df, target=self.target)
+            self._dataset_id = df_content_id(self.df)
+            self._clear_analysis_cache()
+            messagebox.showinfo(
+                "Clean",
+                f"Rows {report['rows_before']}→{report['rows_after']}\n"
+                f"Missing {report['missing_before']}→{report.get('missing_after')}\n"
+                f"Dups {report['duplicates_before']}→{report.get('duplicates_after')}",
+            )
+            self.show_page("quality")
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Clean", str(exc))
 
     # ============================================================ EDA
     def _page_eda(self) -> None:
@@ -716,24 +1044,32 @@ class PeopleRiskApp(ctk.CTk):
         if df.empty:
             body_text(root, "Không còn bản ghi.")
             return
-        roles = self.schema["roles"]
+        roles = self.schema.get("roles") or {}
         rq = self._cached_rq(df)
 
-        # Descriptive for known numeric roles
-        num_cols = [c for c in self.schema["numeric"] if c in df.columns][:16]
+        num_cols = [c for c in (self.schema.get("numeric") or []) if c in df.columns][:16]
         if num_cols:
             section_title(root, "Thống kê mô tả")
             show_dataframe(root, descriptive_statistics(df, num_cols), height=200, page_size=10)
 
+        tgt = self.target
         chart_map = {
-            "rq1": lambda: chart_attrition_donut(df, self.target),
-            "rq2": (lambda: chart_rate_by_category(df, roles["department"], self.target, "Attrition by Department")) if roles.get("department") else None,
-            "rq3": (lambda: chart_rate_by_category(df, roles["overtime"], self.target, "Attrition by Overtime")) if roles.get("overtime") else None,
-            "rq4": (lambda: chart_rate_by_category(df, roles["job_satisfaction"], self.target, "By Satisfaction")) if roles.get("job_satisfaction") else None,
-            "rq5": (lambda: chart_boxplot_by_target(df, roles["income"], self.target, "Income", roles["income"])) if roles.get("income") else None,
-            "rq6": (lambda: chart_boxplot_by_target(df, roles["tenure"], self.target, "Tenure", roles["tenure"])) if roles.get("tenure") else None,
-            "rq7": (lambda: chart_boxplot_by_target(df, roles["distance"], self.target, "Distance", roles["distance"])) if roles.get("distance") else None,
+            "rq1": (lambda: chart_attrition_donut(df, tgt)) if tgt else None,
+            "rq2": (lambda: chart_rate_by_category(df, roles["department"], tgt, "Attrition by Department"))
+            if roles.get("department") and tgt else None,
+            "rq3": (lambda: chart_rate_by_category(df, roles["overtime"], tgt, "Attrition by Overtime"))
+            if roles.get("overtime") and tgt else None,
+            "rq4": (lambda: chart_rate_by_category(df, roles["job_satisfaction"], tgt, "By Satisfaction"))
+            if roles.get("job_satisfaction") and tgt else None,
+            "rq5": (lambda: chart_boxplot_by_target(df, roles["income"], tgt, "Income", roles["income"]))
+            if roles.get("income") and tgt else None,
+            "rq6": (lambda: chart_boxplot_by_target(df, roles["tenure"], tgt, "Tenure", roles["tenure"]))
+            if roles.get("tenure") and tgt else None,
+            "rq7": (lambda: chart_boxplot_by_target(df, roles["distance"], tgt, "Distance", roles["distance"]))
+            if roles.get("distance") and tgt else None,
         }
+        if not roles.get("income"):
+            body_text(root, "Salary analysis unavailable — no salary column detected.", muted=True)
 
         keys = ["rq1", "rq2", "rq3", "rq4", "rq5", "rq6", "rq7", "rq8"]
 
@@ -781,7 +1117,7 @@ class PeopleRiskApp(ctk.CTk):
         host = ctk.CTkFrame(root, fg_color="transparent")
         host.pack(fill="x", padx=2)
 
-        specs = gallery_specs(df, self.schema["roles"], self.target)
+        specs = gallery_specs(df, self.schema.get("roles") or {}, self.target)
         if not specs:
             status.configure(text="")
             body_text(host, "Không tạo được biểu đồ.")
@@ -815,16 +1151,41 @@ class PeopleRiskApp(ctk.CTk):
     # ============================================================ MODEL
     def _page_model(self) -> None:
         root = self.content
-        intro = panel(root, "Phân loại nghỉ việc", f"Target: {self.target}  ·  Train/Test 80/20 (stratify)")
+        tgt = self.target
+        intro = panel(root, "Phân loại nghỉ việc", f"Target: {tgt or '—'}  ·  Train/Test 80/20 (stratify)")
         intro.pack(fill="x", padx=6, pady=6)
         status = ctk.CTkLabel(intro, text="", font=font(11), text_color=THEME.text_muted)
         status.pack(anchor="w", padx=12)
 
+        profile = self.state.profile or {}
+        dt_count = profile.get("datetime_count", 0)
+        if not dt_count:
+            body_text(
+                intro,
+                "No datetime column detected. Time-series forecasting is unavailable for this dataset.",
+                muted=True,
+            )
+
+        def _target_ok() -> str | None:
+            if not tgt or tgt not in self.df.columns:
+                return "No target column selected. Choose a target on the Dataset Import page."
+            n_cls = int(self.df[tgt].nunique(dropna=True))
+            if n_cls < 2:
+                return (
+                    f"Target `{tgt}` has only {n_cls} class. "
+                    "Classification requires at least 2 classes."
+                )
+            return None
+
         def train_cls() -> None:
+            err = _target_ok()
+            if err:
+                messagebox.showerror("Train error", err)
+                return
             status.configure(text="Đang train Logistic Regression & Random Forest...")
             self.update_idletasks()
             try:
-                tr = train_classification_models(self.df_raw, save=True, target=self.target)
+                tr = train_classification_models(self.df, save=True, target=tgt)
                 ev = evaluate_all_classifiers(tr["models"], tr["X_test"], tr["y_test"])
                 self.train_result, self.eval_result = tr, ev
                 self.model_status = ev["best_model_name"]
@@ -832,7 +1193,7 @@ class PeopleRiskApp(ctk.CTk):
                 meta = joblib.load(meta_path) if meta_path.exists() else {}
                 meta.update({
                     "best_model_name": ev["best_model_name"],
-                    "target": self.target,
+                    "target": tgt,
                     "feature_columns": tr["feature_columns"],
                 })
                 joblib.dump(meta, meta_path)
@@ -841,10 +1202,17 @@ class PeopleRiskApp(ctk.CTk):
                 messagebox.showerror("Train error", str(exc))
 
         def train_reg() -> None:
+            roles = self.schema.get("roles") or {}
+            if not roles.get("income"):
+                messagebox.showwarning(
+                    "Regression",
+                    "Salary analysis unavailable — no salary column detected.",
+                )
+                return
             status.configure(text="Đang train Salary Regression...")
             self.update_idletasks()
             try:
-                sal = train_salary_regression(self.df_raw, save=True)
+                sal = train_salary_regression(self.df, save=True)
                 self.salary_eval = evaluate_regression(sal["pipeline"], sal["X_test"], sal["y_test"])
                 self.show_page("model")
             except Exception as exc:  # noqa: BLE001
@@ -854,6 +1222,10 @@ class PeopleRiskApp(ctk.CTk):
         btns.pack(anchor="w", padx=10, pady=8)
         primary_button(btns, "Huấn luyện phân loại", train_cls, width=180).pack(side="left", padx=3)
         secondary_button(btns, "Huấn luyện hồi quy thu nhập", train_reg, width=210).pack(side="left", padx=3)
+
+        pre_err = _target_ok()
+        if pre_err and self.eval_result is None:
+            body_text(root, pre_err, muted=True)
 
         if self.eval_result is None:
             body_text(root, "Chưa có mô hình phân loại.", muted=True)
@@ -899,9 +1271,12 @@ class PeopleRiskApp(ctk.CTk):
             plt.close(fig)
 
         section_title(root, "Hồi quy thu nhập")
+        roles = self.schema.get("roles") or {}
         if self.salary_eval is None:
-            if not self.schema["roles"].get("income"):
-                body_text(root, "Không có cột thu nhập.", muted=True)
+            if not roles.get("income"):
+                body_text(root, "Salary analysis unavailable — no salary column detected.", muted=True)
+            else:
+                body_text(root, "Chưa huấn luyện hồi quy thu nhập.", muted=True)
         else:
             m = self.salary_eval["metrics"]
             show_dataframe(root, pd.DataFrame([m]), height=70, page_size=3)
@@ -910,7 +1285,21 @@ class PeopleRiskApp(ctk.CTk):
     # ============================================================ PREDICT
     def _page_predict(self) -> None:
         root = self.content
-        roles = self.schema["roles"]
+        roles = self.schema.get("roles") or {}
+        tgt = self.target
+
+        if not tgt or tgt not in self.df.columns:
+            body_text(root, "No target column selected. Import a dataset and choose a target first.")
+            primary_button(root, "Go to Dataset Import", lambda: self.show_page("upload"), width=200).pack(
+                anchor="w", padx=10, pady=10
+            )
+            return
+        if int(self.df[tgt].nunique(dropna=True)) < 2:
+            body_text(
+                root,
+                f"Target `{tgt}` has only 1 class. Prediction requires at least 2 classes.",
+            )
+            return
 
         groups = [
             ("PERSONAL", ["age", "gender", "marital", "location"]),
@@ -924,22 +1313,20 @@ class PeopleRiskApp(ctk.CTk):
 
         form = ctk.CTkFrame(root, fg_color="transparent")
         form.pack(fill="x", padx=4, pady=4)
-        # 3 columns layout
         cols_ui = [ctk.CTkFrame(form, fg_color="transparent") for _ in range(3)]
         for i, c in enumerate(cols_ui):
             form.grid_columnconfigure(i, weight=1)
             c.grid(row=0, column=i, sticky="nsew", padx=3)
 
-        numeric, categorical = get_feature_columns(self.df_raw, target=self.target)
+        numeric, categorical = get_feature_columns(self.df, target=tgt)
         self.predict_vars = {}
-        # distribute groups across 3 columns
         for gi, (title, role_keys) in enumerate(groups):
             host = cols_ui[gi % 3]
             card = panel(host, title)
             card.pack(fill="x", pady=4)
             for rk in role_keys:
                 col = roles.get(rk)
-                if not col or col not in self.df_raw.columns:
+                if not col or col not in self.df.columns:
                     continue
                 if col in self.predict_vars:
                     continue
@@ -947,27 +1334,59 @@ class PeopleRiskApp(ctk.CTk):
                 cell.pack(fill="x", padx=10, pady=3)
                 ctk.CTkLabel(cell, text=col, font=font(10, "bold"), text_color=THEME.text_muted).pack(anchor="w")
                 if col in numeric:
-                    series = pd.to_numeric(self.df_raw[col], errors="coerce")
-                    var = ctk.StringVar(value=str(int(round(float(series.median())))))
+                    series = pd.to_numeric(self.df[col], errors="coerce")
+                    med = series.median()
+                    var = ctk.StringVar(value=str(int(round(float(med)))) if pd.notna(med) else "0")
                     ctk.CTkEntry(cell, textvariable=var, height=28, fg_color=THEME.surface_alt).pack(fill="x")
                     self.predict_vars[col] = ("num", var)
                 else:
-                    opts = sorted(self.df_raw[col].dropna().astype(str).unique().tolist())
+                    opts = sorted(self.df[col].dropna().astype(str).unique().tolist())
                     var = ctk.StringVar(value=opts[0] if opts else "")
-                    ctk.CTkOptionMenu(cell, values=opts or [""], variable=var, height=28,
-                                     fg_color=THEME.surface_alt, button_color=THEME.brand).pack(fill="x")
+                    ctk.CTkOptionMenu(
+                        cell, values=opts or [""], variable=var, height=28,
+                        fg_color=THEME.surface_alt, button_color=THEME.brand,
+                    ).pack(fill="x")
                     self.predict_vars[col] = ("cat", var)
 
-        # fill remaining features with hidden defaults
         for col in numeric + categorical:
             if col in self.predict_vars:
                 continue
             if col in numeric:
-                series = pd.to_numeric(self.df_raw[col], errors="coerce")
-                self.predict_vars[col] = ("num", ctk.StringVar(value=str(float(series.median()))))
+                series = pd.to_numeric(self.df[col], errors="coerce")
+                med = series.median()
+                self.predict_vars[col] = (
+                    "num",
+                    ctk.StringVar(value=str(float(med)) if pd.notna(med) else "0"),
+                )
             else:
-                mode = self.df_raw[col].mode()
+                mode = self.df[col].mode()
                 self.predict_vars[col] = ("cat", ctk.StringVar(value=str(mode.iloc[0]) if len(mode) else ""))
+
+        # Features không thuộc role groups — form động
+        shown_roles = set()
+        for _, role_keys in groups:
+            for rk in role_keys:
+                c = roles.get(rk)
+                if c:
+                    shown_roles.add(c)
+        extra_cols = [c for c in numeric + categorical if c not in shown_roles][:12]
+        if extra_cols:
+            extra = panel(root, "OTHER FEATURES")
+            extra.pack(fill="x", padx=4, pady=4)
+            for col in extra_cols:
+                if col not in self.predict_vars:
+                    continue
+                kind, var = self.predict_vars[col]
+                cell = ctk.CTkFrame(extra, fg_color="transparent")
+                cell.pack(fill="x", padx=10, pady=2)
+                ctk.CTkLabel(cell, text=col, font=font(10), text_color=THEME.text_muted).pack(side="left", padx=4)
+                if kind == "num":
+                    ctk.CTkEntry(cell, textvariable=var, width=160, height=28).pack(side="left")
+                else:
+                    opts = sorted(self.df[col].dropna().astype(str).unique().tolist())[:40]
+                    ctk.CTkOptionMenu(
+                        cell, values=opts or [var.get()], variable=var, width=160, height=28
+                    ).pack(side="left")
 
         result_host = ctk.CTkFrame(root, fg_color="transparent")
         result_host.pack(fill="x", padx=4, pady=8)
@@ -979,7 +1398,6 @@ class PeopleRiskApp(ctk.CTk):
                 for col, (kind, var) in self.predict_vars.items():
                     raw = var.get()
                     inputs[col] = float(str(raw).replace(",", "")) if kind == "num" else raw
-                # cast job level int-like
                 jl = roles.get("job_level")
                 if jl and jl in inputs:
                     try:
@@ -992,7 +1410,6 @@ class PeopleRiskApp(ctk.CTk):
                     result_host, result["probability_pct"], result["risk_band"],
                     result["prediction"], name,
                 )
-                # contribution: top RF importances present in form
                 if self.train_result:
                     fi = get_rf_feature_importance(
                         self.train_result["models"]["Random Forest"],
@@ -1015,13 +1432,16 @@ class PeopleRiskApp(ctk.CTk):
         rf = MODELS_DIR / "random_forest.joblib"
         if meta_path.exists() and (lr.exists() or rf.exists()):
             meta = joblib.load(meta_path)
-            # nếu target/dataset đổi → retrain
             if meta.get("target") != self.target:
                 raise ValueError("Model không khớp target hiện tại — huấn luyện lại.")
             best = meta.get("best_model_name", "Random Forest")
             path = lr if best == "Logistic Regression" and lr.exists() else rf
             return joblib.load(path), meta["feature_columns"], best
-        tr = train_classification_models(self.df_raw, save=True, target=self.target)
+        if not self.target or self.target not in self.df.columns:
+            raise ValueError("No target column — cannot train.")
+        if int(self.df[self.target].nunique(dropna=True)) < 2:
+            raise ValueError("Target has only 1 class — cannot train.")
+        tr = train_classification_models(self.df, save=True, target=self.target)
         ev = evaluate_all_classifiers(tr["models"], tr["X_test"], tr["y_test"])
         self.train_result, self.eval_result = tr, ev
         self.model_status = ev["best_model_name"]

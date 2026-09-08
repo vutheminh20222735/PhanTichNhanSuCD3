@@ -67,11 +67,15 @@ def find_column(df: pd.DataFrame, aliases: list[str] | str, role: str | None = N
         key = str(alias).strip().lower().replace(" ", "")
         if key in normalized:
             return normalized[key]
-    # partial contains
+    # partial: chỉ khi alias đủ dài để tránh khớp nhầm (vd. "c" ∈ "churn")
     for alias in aliases:
         key = str(alias).strip().lower().replace(" ", "")
+        if len(key) < 4:
+            continue
         for nk, original in normalized.items():
-            if key and (key in nk or nk in key):
+            if len(nk) < 3:
+                continue
+            if key in nk or (len(nk) >= 4 and nk in key):
                 return original
     return None
 

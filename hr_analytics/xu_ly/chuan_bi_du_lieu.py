@@ -9,7 +9,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-from src.data.schema_detector import build_schema, map_binary_target
+from xu_ly.tim_cot_du_lieu import build_schema, map_binary_target
 
 
 def map_target(y: pd.Series) -> pd.Series:

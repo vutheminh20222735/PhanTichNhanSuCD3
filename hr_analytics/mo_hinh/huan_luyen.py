@@ -12,14 +12,14 @@ from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 
-from src.data.schema_detector import build_schema
-from src.preprocessing.transformer import (
+from xu_ly.tim_cot_du_lieu import build_schema
+from xu_ly.chuan_bi_du_lieu import (
     build_preprocessor,
     get_feature_columns,
     map_target,
     prepare_xy,
 )
-from src.utils import ID_COL, MODELS_DIR, TARGET_COL
+from xu_ly.tien_ich import MODELS_DIR
 
 
 def split_data(
@@ -140,11 +140,11 @@ def train_salary_regression(
     if not income_col or income_col not in df.columns:
         raise ValueError("Không tìm thấy cột thu nhập để huấn luyện regression.")
 
-    attrition_target = schema.get("target") or TARGET_COL
-    id_col = schema.get("id_col") or ID_COL
+    attrition_target = schema.get("target")
+    id_col = schema.get("id_col")
     exclude = {c for c in [attrition_target, id_col, income_col] if c}
     numeric_all, categorical_all = get_feature_columns(
-        df, target=attrition_target if attrition_target in df.columns else None
+        df, target=attrition_target if attrition_target and attrition_target in df.columns else None
     )
     numeric = [c for c in numeric_all if c not in exclude]
     categorical = [c for c in categorical_all if c not in exclude]

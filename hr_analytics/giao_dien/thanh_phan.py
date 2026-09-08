@@ -11,7 +11,7 @@ import pandas as pd
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
-from desktop.theme import THEME
+from giao_dien.giao_dien_mau import THEME
 
 
 def font(size: int = 13, weight: str = "normal") -> ctk.CTkFont:

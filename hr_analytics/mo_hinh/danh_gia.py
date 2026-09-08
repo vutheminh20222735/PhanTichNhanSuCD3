@@ -20,7 +20,7 @@ from sklearn.metrics import (
     roc_curve,
 )
 
-from src.preprocessing.transformer import get_feature_names_from_preprocessor
+from xu_ly.chuan_bi_du_lieu import get_feature_names_from_preprocessor
 
 
 def evaluate_classifier(

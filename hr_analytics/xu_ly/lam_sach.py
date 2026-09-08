@@ -7,20 +7,17 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from src.data.validator import check_duplicates, check_missing_values, validate_dataset
-from src.utils import OUTLIER_COLUMNS, PROCESSED_DIR
+from xu_ly.kiem_tra_du_lieu import check_duplicates, check_missing_values, validate_dataset
+from xu_ly.tien_ich import PROCESSED_DIR
 
 
 def detect_outliers_iqr(df: pd.DataFrame, columns: list[str] | None = None) -> pd.DataFrame:
-    """Phát hiện outlier bằng phương pháp IQR.
-
-    Không xóa outlier — chỉ báo cáo Q1, Q3, IQR, bounds, count, %.
-    """
-    cols = columns or OUTLIER_COLUMNS
+    """Phát hiện outlier bằng phương pháp IQR — không xóa."""
+    if columns is None:
+        columns = list(df.select_dtypes(include=[np.number]).columns)
+    cols = [c for c in columns if c in df.columns]
     rows = []
     for col in cols:
-        if col not in df.columns:
-            continue
         series = pd.to_numeric(df[col], errors="coerce").dropna()
         if series.empty:
             continue
@@ -69,6 +66,7 @@ def clean_dataset(
     """
     report: dict[str, Any] = {
         "rows_before": len(df),
+        "cols_before": df.shape[1],
         "missing_before": int(df.isnull().sum().sum()),
         "duplicates_before": int(df.duplicated().sum()),
         "actions": [],
@@ -115,7 +113,17 @@ def clean_dataset(
         "Đã phân tích outlier bằng IQR — không tự động xóa outlier."
     )
 
+    # Inf → NaN
+    num_cols = list(cleaned.select_dtypes(include=[np.number]).columns)
+    for col in num_cols:
+        mask = np.isinf(cleaned[col].to_numpy(dtype=float, na_value=np.nan))
+        n_inf = int(np.nansum(mask))
+        if n_inf:
+            cleaned.loc[mask, col] = np.nan
+            report["actions"].append(f"Đổi {n_inf} Inf/-Inf ở `{col}` thành missing.")
+
     report["rows_after"] = len(cleaned)
+    report["cols_after"] = cleaned.shape[1]
     report["missing_after"] = int(cleaned.isnull().sum().sum())
     report["duplicates_after"] = int(cleaned.duplicated().sum())
 

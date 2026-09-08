@@ -38,36 +38,33 @@ THEME = Theme()
 
 NAV_SECTIONS = [
     (
-        "OVERVIEW",
-        [("dashboard", "Tổng quan", "KPI & rủi ro nghỉ việc")],
-    ),
-    (
         "DATA",
         [
-            ("data", "Dữ liệu", "Từ điển cột & mẫu"),
-            ("upload", "Nhập Dataset", "Upload CSV"),
-            ("quality", "Chất lượng dữ liệu", "Missing · trùng · outlier"),
+            ("upload", "Nhập Dataset", "Upload CSV · chọn target"),
+            ("dashboard", "Tổng quan", "KPI động theo dataset"),
+            ("data", "Dữ liệu", "Dataset profile"),
+            ("quality", "Chất lượng dữ liệu", "Quality score · làm sạch"),
         ],
     ),
     (
         "ANALYTICS",
         [
             ("eda", "Phân tích EDA", "Thống kê & quan hệ"),
-            ("viz", "Trực quan hóa", "Thư viện biểu đồ"),
+            ("viz", "Trực quan hóa", "Biểu đồ theo cột thật"),
         ],
     ),
     (
         "AI / ML",
         [
-            ("model", "Mô hình AI", "Phân loại & hồi quy"),
-            ("predict", "Dự báo rủi ro", "Chấm điểm hồ sơ"),
+            ("model", "Mô hình AI", "Classification · Regression"),
+            ("predict", "Dự báo rủi ro", "Form động theo feature"),
         ],
     ),
     (
         "RESULTS",
         [
-            ("insights", "Insights", "Phát hiện từ dữ liệu"),
-            ("recs", "Khuyến nghị", "Đề xuất cho HR"),
+            ("insights", "Insights", "Từ dữ liệu hiện tại"),
+            ("recs", "Khuyến nghị", "Dựa trên insight"),
         ],
     ),
 ]
@@ -79,4 +76,6 @@ FILTER_ROLE_LABELS = {
     "overtime": "Làm thêm giờ",
     "contract": "Hợp đồng",
     "job_level": "Cấp bậc",
+    "job_role": "Vị trí",
+    "education": "Học vấn",
 }

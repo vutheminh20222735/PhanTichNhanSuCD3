@@ -9,9 +9,9 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 
-from src.analysis.dynamic_eda import attrition_rate, attrition_rate_by_group, leave_mask
-from src.analysis.correlation import compute_correlation_matrix
-from src.utils import format_pct
+from xu_ly.phan_tich_eda import attrition_rate, attrition_rate_by_group, leave_mask
+from xu_ly.tuong_quan import compute_correlation_matrix
+from xu_ly.tien_ich import format_pct
 
 _C_PRIMARY = "#0B3A4A"
 _C_ACCENT = "#1F8A70"
@@ -119,7 +119,7 @@ def chart_boxplot_by_target(df: pd.DataFrame, value_col: str, target: str, title
 
 
 def chart_correlation(df: pd.DataFrame, target: str | None = None):
-    from src.data.schema_detector import map_binary_target
+    from xu_ly.tim_cot_du_lieu import map_binary_target
     num = df.select_dtypes(include=[np.number]).copy()
     if target and target in df.columns and target not in num.columns:
         try:
