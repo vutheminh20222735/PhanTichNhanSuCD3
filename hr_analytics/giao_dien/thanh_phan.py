@@ -522,6 +522,33 @@ def primary_button(parent, text: str, command: Callable, **kwargs) -> ctk.CTkBut
     return ctk.CTkButton(parent, text=text, command=command, **kwargs)
 
 
+def option_menu(parent, values: list[str], variable=None, **kwargs) -> ctk.CTkOptionMenu:
+    """Dropdown chữ đậm, dễ đọc trên nền sáng."""
+    kwargs.setdefault("fg_color", THEME.surface)
+    kwargs.setdefault("button_color", THEME.brand)
+    kwargs.setdefault("button_hover_color", THEME.brand_soft)
+    kwargs.setdefault("text_color", THEME.text)
+    kwargs.setdefault("dropdown_fg_color", THEME.surface)
+    kwargs.setdefault("dropdown_hover_color", THEME.surface_alt)
+    kwargs.setdefault("dropdown_text_color", THEME.text)
+    kwargs.setdefault("font", font(12))
+    kwargs.setdefault("height", 30)
+    kwargs.setdefault("corner_radius", 8)
+    return ctk.CTkOptionMenu(parent, values=values or [""], variable=variable, **kwargs)
+
+
+def text_entry(parent, textvariable=None, **kwargs) -> ctk.CTkEntry:
+    """Ô nhập chữ đậm trên nền sáng."""
+    kwargs.setdefault("fg_color", THEME.surface)
+    kwargs.setdefault("border_color", THEME.border)
+    kwargs.setdefault("text_color", THEME.text)
+    kwargs.setdefault("placeholder_text_color", THEME.text_muted)
+    kwargs.setdefault("font", font(12))
+    kwargs.setdefault("height", 30)
+    kwargs.setdefault("corner_radius", 8)
+    return ctk.CTkEntry(parent, textvariable=textvariable, **kwargs)
+
+
 def secondary_button(parent, text: str, command: Callable, **kwargs) -> ctk.CTkButton:
     kwargs.setdefault("fg_color", THEME.surface_alt)
     kwargs.setdefault("hover_color", THEME.border)

@@ -39,6 +39,7 @@ from giao_dien.thanh_phan import (
     font,
     insight_card,
     make_kpi_card,
+    option_menu,
     panel,
     primary_button,
     quality_status_card,
@@ -49,6 +50,7 @@ from giao_dien.thanh_phan import (
     section_title,
     show_dataframe,
     status_pill,
+    text_entry,
 )
 from xu_ly.thong_ke_mo_ta import descriptive_statistics
 from xu_ly.phan_tich_eda import compute_kpis_dynamic, run_research_questions
@@ -421,9 +423,8 @@ class PeopleRiskApp(ctk.CTk):
             self.filter_vars[col] = var
             self.filter_state[col] = current
 
-            menu = ctk.CTkOptionMenu(
+            menu = option_menu(
                 cell, values=opts, variable=var, width=140, height=28, font=font(11),
-                fg_color=THEME.surface_alt, button_color=THEME.brand, text_color=THEME.text,
             )
             menu.pack()
 
@@ -517,7 +518,7 @@ class PeopleRiskApp(ctk.CTk):
         ctk.CTkLabel(enc_row, text="Encoding", font=font(11, "bold"), text_color=THEME.text_muted).pack(
             side="left", padx=(0, 8)
         )
-        ctk.CTkOptionMenu(
+        option_menu(
             enc_row,
             values=list(COMMON_ENCODINGS),
             variable=self.encoding_var,
@@ -603,7 +604,7 @@ class PeopleRiskApp(ctk.CTk):
             or (all_cols[0] if all_cols else "")
         )
         self.pending_target_var = ctk.StringVar(value=str(default_tgt))
-        ctk.CTkOptionMenu(
+        option_menu(
             root, values=all_cols or [""], variable=self.pending_target_var, width=280, height=34
         ).pack(anchor="w", padx=12, pady=6)
 
@@ -1289,19 +1290,51 @@ class PeopleRiskApp(ctk.CTk):
         tgt = self.target
 
         if not tgt or tgt not in self.df.columns:
-            body_text(root, "No target column selected. Import a dataset and choose a target first.")
+            body_text(root, "Chưa chọn target. Vào Nhập Dataset để chọn.")
             primary_button(root, "Go to Dataset Import", lambda: self.show_page("upload"), width=200).pack(
                 anchor="w", padx=10, pady=10
             )
             return
         if int(self.df[tgt].nunique(dropna=True)) < 2:
-            body_text(
-                root,
-                f"Target `{tgt}` has only 1 class. Prediction requires at least 2 classes.",
-            )
+            body_text(root, f"Target `{tgt}` chỉ có 1 lớp — không dự báo được.")
             return
 
-        groups = [
+        # Ưu tiên đúng feature model đã train; không thì lấy từ dataset hiện tại
+        feature_cols: list[str] = []
+        if self.train_result and self.train_result.get("feature_columns"):
+            feature_cols = [c for c in self.train_result["feature_columns"] if c in self.df.columns]
+        if not feature_cols:
+            try:
+                meta_path = MODELS_DIR / "feature_meta.joblib"
+                if meta_path.exists():
+                    meta = joblib.load(meta_path)
+                    if meta.get("target") == tgt:
+                        feature_cols = [c for c in meta.get("feature_columns", []) if c in self.df.columns]
+            except Exception:  # noqa: BLE001
+                pass
+        if not feature_cols:
+            numeric, categorical = get_feature_columns(self.df, target=tgt)
+            feature_cols = list(numeric) + list(categorical)
+        else:
+            numeric, categorical = get_feature_columns(self.df, target=tgt)
+
+        numeric_set = set(numeric)
+        id_col = self.schema.get("id_col") or roles.get("id")
+
+        if not feature_cols:
+            body_text(root, "Dataset không còn cột feature để nhập.")
+            return
+
+        body_text(
+            root,
+            f"Form theo dataset hiện tại · {len(feature_cols)} cột (trừ target"
+            + (f" & ID `{id_col}`" if id_col else "")
+            + "). Giá trị mặc định = median/mode.",
+            muted=True,
+        )
+
+        # Nhóm theo role nếu có; cột không map → "CÁC CỘT KHÁC" — hiện ĐỦ, không cắt
+        role_groups = [
             ("PERSONAL", ["age", "gender", "marital", "location"]),
             ("JOB", ["department", "job_role", "job_level", "contract", "travel", "education", "field"]),
             ("COMPENSATION", ["income", "salary_hike"]),
@@ -1310,83 +1343,78 @@ class PeopleRiskApp(ctk.CTk):
             ("SATISFACTION", ["job_satisfaction", "env_satisfaction", "worklife", "involvement", "relationship"]),
             ("PERFORMANCE", ["performance", "training"]),
         ]
+        assigned: set[str] = set()
+        grouped: list[tuple[str, list[str]]] = []
+        for title, role_keys in role_groups:
+            cols_in = []
+            for rk in role_keys:
+                col = roles.get(rk)
+                if col and col in feature_cols and col not in assigned:
+                    cols_in.append(col)
+                    assigned.add(col)
+            if cols_in:
+                grouped.append((title, cols_in))
+        rest = [c for c in feature_cols if c not in assigned]
+        if rest:
+            grouped.append(("CÁC CỘT KHÁC", rest))
+
+        self.predict_vars = {}
+
+        def _default_var(col: str) -> tuple[str, ctk.StringVar]:
+            if col in numeric_set or pd.api.types.is_numeric_dtype(self.df[col]):
+                series = pd.to_numeric(self.df[col], errors="coerce")
+                med = series.median()
+                if pd.notna(med):
+                    val = str(int(round(float(med)))) if float(med).is_integer() else str(round(float(med), 4))
+                else:
+                    val = "0"
+                return "num", ctk.StringVar(value=val)
+            opts = sorted(self.df[col].dropna().astype(str).unique().tolist())
+            mode = self.df[col].mode()
+            default = str(mode.iloc[0]) if len(mode) else (opts[0] if opts else "")
+            return "cat", ctk.StringVar(value=default)
+
+        def _add_field(parent, col: str) -> None:
+            if col in self.predict_vars:
+                return
+            kind, var = _default_var(col)
+            self.predict_vars[col] = (kind, var)
+            cell = ctk.CTkFrame(parent, fg_color="transparent")
+            cell.pack(fill="x", padx=10, pady=3)
+            ctk.CTkLabel(cell, text=col, font=font(10, "bold"), text_color=THEME.text_muted).pack(anchor="w")
+            if kind == "num":
+                text_entry(cell, textvariable=var, height=28).pack(fill="x")
+            else:
+                opts = sorted(self.df[col].dropna().astype(str).unique().tolist())
+                # Giữ đủ category; nếu quá nhiều vẫn cho nhập text
+                if 0 < len(opts) <= 80:
+                    option_menu(cell, values=opts, variable=var, height=28).pack(fill="x")
+                else:
+                    text_entry(cell, textvariable=var, height=28).pack(fill="x")
 
         form = ctk.CTkFrame(root, fg_color="transparent")
         form.pack(fill="x", padx=4, pady=4)
-        cols_ui = [ctk.CTkFrame(form, fg_color="transparent") for _ in range(3)]
-        for i, c in enumerate(cols_ui):
+        n_cols = 3
+        for i in range(n_cols):
             form.grid_columnconfigure(i, weight=1)
+        cols_ui = [ctk.CTkFrame(form, fg_color="transparent") for _ in range(n_cols)]
+        for i, c in enumerate(cols_ui):
             c.grid(row=0, column=i, sticky="nsew", padx=3)
 
-        numeric, categorical = get_feature_columns(self.df, target=tgt)
-        self.predict_vars = {}
-        for gi, (title, role_keys) in enumerate(groups):
-            host = cols_ui[gi % 3]
-            card = panel(host, title)
+        for gi, (title, cols_in) in enumerate(grouped):
+            host = cols_ui[gi % n_cols]
+            card = panel(host, f"{title} ({len(cols_in)})")
             card.pack(fill="x", pady=4)
-            for rk in role_keys:
-                col = roles.get(rk)
-                if not col or col not in self.df.columns:
-                    continue
-                if col in self.predict_vars:
-                    continue
-                cell = ctk.CTkFrame(card, fg_color="transparent")
-                cell.pack(fill="x", padx=10, pady=3)
-                ctk.CTkLabel(cell, text=col, font=font(10, "bold"), text_color=THEME.text_muted).pack(anchor="w")
-                if col in numeric:
-                    series = pd.to_numeric(self.df[col], errors="coerce")
-                    med = series.median()
-                    var = ctk.StringVar(value=str(int(round(float(med)))) if pd.notna(med) else "0")
-                    ctk.CTkEntry(cell, textvariable=var, height=28, fg_color=THEME.surface_alt).pack(fill="x")
-                    self.predict_vars[col] = ("num", var)
-                else:
-                    opts = sorted(self.df[col].dropna().astype(str).unique().tolist())
-                    var = ctk.StringVar(value=opts[0] if opts else "")
-                    ctk.CTkOptionMenu(
-                        cell, values=opts or [""], variable=var, height=28,
-                        fg_color=THEME.surface_alt, button_color=THEME.brand,
-                    ).pack(fill="x")
-                    self.predict_vars[col] = ("cat", var)
+            for col in cols_in:
+                _add_field(card, col)
 
-        for col in numeric + categorical:
-            if col in self.predict_vars:
-                continue
-            if col in numeric:
-                series = pd.to_numeric(self.df[col], errors="coerce")
-                med = series.median()
-                self.predict_vars[col] = (
-                    "num",
-                    ctk.StringVar(value=str(float(med)) if pd.notna(med) else "0"),
-                )
-            else:
-                mode = self.df[col].mode()
-                self.predict_vars[col] = ("cat", ctk.StringVar(value=str(mode.iloc[0]) if len(mode) else ""))
+        # Đảm bảo 100% feature_cols đã có biến (phòng sót)
+        for col in feature_cols:
+            if col not in self.predict_vars:
+                kind, var = _default_var(col)
+                self.predict_vars[col] = (kind, var)
 
-        # Features không thuộc role groups — form động
-        shown_roles = set()
-        for _, role_keys in groups:
-            for rk in role_keys:
-                c = roles.get(rk)
-                if c:
-                    shown_roles.add(c)
-        extra_cols = [c for c in numeric + categorical if c not in shown_roles][:12]
-        if extra_cols:
-            extra = panel(root, "OTHER FEATURES")
-            extra.pack(fill="x", padx=4, pady=4)
-            for col in extra_cols:
-                if col not in self.predict_vars:
-                    continue
-                kind, var = self.predict_vars[col]
-                cell = ctk.CTkFrame(extra, fg_color="transparent")
-                cell.pack(fill="x", padx=10, pady=2)
-                ctk.CTkLabel(cell, text=col, font=font(10), text_color=THEME.text_muted).pack(side="left", padx=4)
-                if kind == "num":
-                    ctk.CTkEntry(cell, textvariable=var, width=160, height=28).pack(side="left")
-                else:
-                    opts = sorted(self.df[col].dropna().astype(str).unique().tolist())[:40]
-                    ctk.CTkOptionMenu(
-                        cell, values=opts or [var.get()], variable=var, width=160, height=28
-                    ).pack(side="left")
+        section_title(root, f"Đã sẵn sàng {len(self.predict_vars)} / {len(feature_cols)} cột feature")
 
         result_host = ctk.CTkFrame(root, fg_color="transparent")
         result_host.pack(fill="x", padx=4, pady=8)
@@ -1395,14 +1423,28 @@ class PeopleRiskApp(ctk.CTk):
             try:
                 model, feats, name = self._load_model()
                 inputs = {}
-                for col, (kind, var) in self.predict_vars.items():
-                    raw = var.get()
-                    inputs[col] = float(str(raw).replace(",", "")) if kind == "num" else raw
-                jl = roles.get("job_level")
-                if jl and jl in inputs:
-                    try:
-                        inputs[jl] = int(float(inputs[jl]))
-                    except Exception:  # noqa: BLE001
+                for col in feats:
+                    if col in self.predict_vars:
+                        kind, var = self.predict_vars[col]
+                        raw = var.get()
+                        if kind == "num":
+                            inputs[col] = float(str(raw).replace(",", ""))
+                        else:
+                            inputs[col] = raw
+                    elif col in self.df.columns:
+                        # fallback an toàn nếu thiếu trên form
+                        if pd.api.types.is_numeric_dtype(self.df[col]):
+                            med = pd.to_numeric(self.df[col], errors="coerce").median()
+                            inputs[col] = float(med) if pd.notna(med) else 0.0
+                        else:
+                            mode = self.df[col].mode()
+                            inputs[col] = mode.iloc[0] if len(mode) else ""
+                    else:
+                        raise ValueError(f"Thiếu feature `{col}` — huấn luyện lại trên dataset hiện tại.")
+                # ép kiểu số nguyên cho cột giống level nếu là số
+                for col, val in list(inputs.items()):
+                    if isinstance(val, float) and val.is_integer():
+                        # giữ float vẫn OK cho sklearn; job_level int-like
                         pass
                 result = predict_attrition(model, inputs, feature_columns=feats)
                 clear_frame(result_host)
@@ -1410,7 +1452,7 @@ class PeopleRiskApp(ctk.CTk):
                     result_host, result["probability_pct"], result["risk_band"],
                     result["prediction"], name,
                 )
-                if self.train_result:
+                if self.train_result and "Random Forest" in self.train_result.get("models", {}):
                     fi = get_rf_feature_importance(
                         self.train_result["models"]["Random Forest"],
                         self.train_result["numeric_features"],
