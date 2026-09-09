@@ -1284,6 +1284,13 @@ class PeopleRiskApp(ctk.CTk):
             body_text(root, f"MAE ≈ {format_vnd(m['MAE'])} · RMSE ≈ {format_vnd(m['RMSE'])} · R²={m['R2']:.4f}")
 
     # ============================================================ PREDICT
+    def _current_feature_columns(self) -> tuple[list[str], list[str], list[str]]:
+        """Feature sạch cho form/train: trừ target, ID, junk, cột hằng."""
+        tgt = self.target
+        numeric, categorical = get_feature_columns(self.df, target=tgt)
+        feature_cols = list(numeric) + list(categorical)
+        return feature_cols, numeric, categorical
+
     def _page_predict(self) -> None:
         root = self.content
         roles = self.schema.get("roles") or {}
@@ -1299,49 +1306,53 @@ class PeopleRiskApp(ctk.CTk):
             body_text(root, f"Target `{tgt}` chỉ có 1 lớp — không dự báo được.")
             return
 
-        # Ưu tiên đúng feature model đã train; không thì lấy từ dataset hiện tại
-        feature_cols: list[str] = []
-        if self.train_result and self.train_result.get("feature_columns"):
-            feature_cols = [c for c in self.train_result["feature_columns"] if c in self.df.columns]
-        if not feature_cols:
-            try:
-                meta_path = MODELS_DIR / "feature_meta.joblib"
-                if meta_path.exists():
-                    meta = joblib.load(meta_path)
-                    if meta.get("target") == tgt:
-                        feature_cols = [c for c in meta.get("feature_columns", []) if c in self.df.columns]
-            except Exception:  # noqa: BLE001
-                pass
-        if not feature_cols:
-            numeric, categorical = get_feature_columns(self.df, target=tgt)
-            feature_cols = list(numeric) + list(categorical)
-        else:
-            numeric, categorical = get_feature_columns(self.df, target=tgt)
-
+        feature_cols, numeric, categorical = self._current_feature_columns()
         numeric_set = set(numeric)
         id_col = self.schema.get("id_col") or roles.get("id")
+        junk_cols = [c for c in (self.schema.get("junk_cols") or []) if c and c != id_col]
 
         if not feature_cols:
             body_text(root, "Dataset không còn cột feature để nhập.")
             return
 
-        body_text(
-            root,
-            f"Form theo dataset hiện tại · {len(feature_cols)} cột (trừ target"
-            + (f" & ID `{id_col}`" if id_col else "")
-            + "). Giá trị mặc định = median/mode.",
-            muted=True,
-        )
+        trained = bool(self.train_result and self.eval_result)
+        if not trained:
+            warn = panel(root, "Chưa có mô hình", "Cần huấn luyện trước khi chấm điểm (hoặc bấm Chấm điểm để tự train).")
+            warn.pack(fill="x", padx=6, pady=6)
+            btns = ctk.CTkFrame(warn, fg_color="transparent")
+            btns.pack(anchor="w", padx=10, pady=8)
 
-        # Nhóm theo role nếu có; cột không map → "CÁC CỘT KHÁC" — hiện ĐỦ, không cắt
+            def _train_now() -> None:
+                try:
+                    self._ensure_classifier_trained(force=True)
+                    self._set_header(self.current_page)
+                    self.show_page("predict")
+                except Exception as exc:  # noqa: BLE001
+                    messagebox.showerror("Huấn luyện", str(exc))
+
+            primary_button(btns, "Huấn luyện ngay", _train_now, width=160).pack(side="left", padx=3)
+            secondary_button(btns, "Mở trang Mô hình AI", lambda: self.show_page("model"), width=180).pack(
+                side="left", padx=3
+            )
+        else:
+            body_text(
+                root,
+                f"Model: {self.eval_result['best_model_name']}  ·  Form {len(feature_cols)} feature"
+                + (f"  ·  đã loại ID `{id_col}`" if id_col else "")
+                + (f"  ·  junk: {', '.join(junk_cols)}" if junk_cols else "")
+                + "  ·  mặc định = median/mode",
+                muted=True,
+            )
+
+        # Nhóm theo role đã nhận diện; phần còn lại → "CÁC CỘT KHÁC"
         role_groups = [
-            ("PERSONAL", ["age", "gender", "marital", "location"]),
-            ("JOB", ["department", "job_role", "job_level", "contract", "travel", "education", "field"]),
-            ("COMPENSATION", ["income", "salary_hike"]),
-            ("WORK", ["overtime", "distance", "tenure", "total_experience", "num_companies",
-                      "years_role", "years_promo", "years_manager"]),
-            ("SATISFACTION", ["job_satisfaction", "env_satisfaction", "worklife", "involvement", "relationship"]),
-            ("PERFORMANCE", ["performance", "training"]),
+            ("CÁ NHÂN", ["age", "gender", "marital", "location"]),
+            ("CÔNG VIỆC", ["department", "job_role", "job_level", "contract", "travel", "education", "field"]),
+            ("THU NHẬP", ["income", "salary_hike"]),
+            ("LÀM VIỆC", ["overtime", "distance", "tenure", "total_experience", "num_companies",
+                          "years_role", "years_promo", "years_manager"]),
+            ("HÀI LÒNG", ["job_satisfaction", "env_satisfaction", "worklife", "involvement", "relationship"]),
+            ("HIỆU SUẤT", ["performance", "training"]),
         ]
         assigned: set[str] = set()
         grouped: list[tuple[str, list[str]]] = []
@@ -1386,7 +1397,6 @@ class PeopleRiskApp(ctk.CTk):
                 text_entry(cell, textvariable=var, height=28).pack(fill="x")
             else:
                 opts = sorted(self.df[col].dropna().astype(str).unique().tolist())
-                # Giữ đủ category; nếu quá nhiều vẫn cho nhập text
                 if 0 < len(opts) <= 80:
                     option_menu(cell, values=opts, variable=var, height=28).pack(fill="x")
                 else:
@@ -1408,11 +1418,9 @@ class PeopleRiskApp(ctk.CTk):
             for col in cols_in:
                 _add_field(card, col)
 
-        # Đảm bảo 100% feature_cols đã có biến (phòng sót)
         for col in feature_cols:
             if col not in self.predict_vars:
-                kind, var = _default_var(col)
-                self.predict_vars[col] = (kind, var)
+                _add_field(cols_ui[0], col)
 
         section_title(root, f"Đã sẵn sàng {len(self.predict_vars)} / {len(feature_cols)} cột feature")
 
@@ -1421,8 +1429,9 @@ class PeopleRiskApp(ctk.CTk):
 
         def run() -> None:
             try:
-                model, feats, name = self._load_model()
-                inputs = {}
+                model, feats, name = self._ensure_classifier_trained(force=False)
+                self._set_header(self.current_page)
+                inputs: dict[str, Any] = {}
                 for col in feats:
                     if col in self.predict_vars:
                         kind, var = self.predict_vars[col]
@@ -1432,7 +1441,6 @@ class PeopleRiskApp(ctk.CTk):
                         else:
                             inputs[col] = raw
                     elif col in self.df.columns:
-                        # fallback an toàn nếu thiếu trên form
                         if pd.api.types.is_numeric_dtype(self.df[col]):
                             med = pd.to_numeric(self.df[col], errors="coerce").median()
                             inputs[col] = float(med) if pd.notna(med) else 0.0
@@ -1441,11 +1449,6 @@ class PeopleRiskApp(ctk.CTk):
                             inputs[col] = mode.iloc[0] if len(mode) else ""
                     else:
                         raise ValueError(f"Thiếu feature `{col}` — huấn luyện lại trên dataset hiện tại.")
-                # ép kiểu số nguyên cho cột giống level nếu là số
-                for col, val in list(inputs.items()):
-                    if isinstance(val, float) and val.is_integer():
-                        # giữ float vẫn OK cho sklearn; job_level int-like
-                        pass
                 result = predict_attrition(model, inputs, feature_columns=feats)
                 clear_frame(result_host)
                 risk_result_card(
@@ -1465,29 +1468,62 @@ class PeopleRiskApp(ctk.CTk):
 
         primary_button(root, "Chấm điểm rủi ro", run, width=200, height=42).pack(anchor="w", padx=10, pady=8)
 
-    def _load_model(self):
-        if self.train_result and self.eval_result:
-            best = self.eval_result["best_model_name"]
-            return self.train_result["models"][best], self.train_result["feature_columns"], best
-        meta_path = MODELS_DIR / "feature_meta.joblib"
-        lr = MODELS_DIR / "logistic_regression.joblib"
-        rf = MODELS_DIR / "random_forest.joblib"
-        if meta_path.exists() and (lr.exists() or rf.exists()):
-            meta = joblib.load(meta_path)
-            if meta.get("target") != self.target:
-                raise ValueError("Model không khớp target hiện tại — huấn luyện lại.")
-            best = meta.get("best_model_name", "Random Forest")
-            path = lr if best == "Logistic Regression" and lr.exists() else rf
-            return joblib.load(path), meta["feature_columns"], best
+    def _ensure_classifier_trained(self, force: bool = False):
+        """Trả về (model, feature_columns, name). Train lại nếu thiếu hoặc feature lệch dataset."""
         if not self.target or self.target not in self.df.columns:
-            raise ValueError("No target column — cannot train.")
+            raise ValueError("Chưa có cột target — không train được.")
         if int(self.df[self.target].nunique(dropna=True)) < 2:
-            raise ValueError("Target has only 1 class — cannot train.")
+            raise ValueError("Target chỉ có 1 lớp — không train được.")
+
+        current_feats, _, _ = self._current_feature_columns()
+        current_set = set(current_feats)
+
+        def _usable_memory_model():
+            if not (self.train_result and self.eval_result):
+                return None
+            feats = list(self.train_result.get("feature_columns") or [])
+            if not feats:
+                return None
+            # Cho phép model cũ nếu mọi feature của model vẫn còn trong df
+            if any(c not in self.df.columns for c in feats):
+                return None
+            # Nếu schema sạch hơn (bỏ ID/junk) và lệch nhiều → nên train lại
+            if current_set and set(feats) != current_set:
+                # chỉ tái dùng khi tập model ⊇ current và phần thừa toàn junk/id
+                extra = set(feats) - current_set
+                junk = set(self.schema.get("junk_cols") or [])
+                id_col = self.schema.get("id_col")
+                if id_col:
+                    junk.add(id_col)
+                if not extra.issubset(junk) or (current_set - set(feats)):
+                    return None
+            best = self.eval_result["best_model_name"]
+            return self.train_result["models"][best], feats, best
+
+        if not force:
+            mem = _usable_memory_model()
+            if mem is not None:
+                return mem
+
         tr = train_classification_models(self.df, save=True, target=self.target)
         ev = evaluate_all_classifiers(tr["models"], tr["X_test"], tr["y_test"])
         self.train_result, self.eval_result = tr, ev
         self.model_status = ev["best_model_name"]
-        return tr["models"][ev["best_model_name"]], tr["feature_columns"], ev["best_model_name"]
+        meta_path = MODELS_DIR / "feature_meta.joblib"
+        meta = {
+            "best_model_name": ev["best_model_name"],
+            "target": self.target,
+            "feature_columns": tr["feature_columns"],
+            "numeric_features": tr["numeric_features"],
+            "categorical_features": tr["categorical_features"],
+        }
+        MODELS_DIR.mkdir(parents=True, exist_ok=True)
+        joblib.dump(meta, meta_path)
+        best = ev["best_model_name"]
+        return tr["models"][best], tr["feature_columns"], best
+
+    def _load_model(self):
+        return self._ensure_classifier_trained(force=False)
 
     # ============================================================ INSIGHTS
     def _page_insights(self) -> None:
