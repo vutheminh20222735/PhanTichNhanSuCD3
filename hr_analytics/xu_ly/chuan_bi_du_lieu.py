@@ -22,11 +22,15 @@ def get_feature_columns(
     target: str | None = None,
     id_col: str | None = None,
 ) -> tuple[list[str], list[str]]:
-    """Lấy numeric/categorical features theo dtype thực tế."""
+    """Lấy numeric/categorical features theo dtype thực tế.
+
+    Loại target, ID, cột junk (Over18, EmployeeCount, …) và cột hằng.
+    """
     schema = build_schema(df, target=target)
     target = target or schema["target"]
     id_col = id_col or schema["id_col"]
-    exclude = {c for c in [target, id_col] if c}
+    junk = set(schema.get("junk_cols") or [])
+    exclude = {c for c in [target, id_col, *junk] if c}
     numeric = [c for c in schema["numeric"] if c not in exclude]
     categorical = [c for c in schema["categorical"] if c not in exclude]
     return numeric, categorical
