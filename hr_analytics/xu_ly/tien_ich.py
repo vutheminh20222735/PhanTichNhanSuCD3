@@ -10,6 +10,8 @@ import pandas as pd
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 MODELS_DIR = PROJECT_ROOT / "models" / "saved_models"
 PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
+RAW_DIR = PROJECT_ROOT / "data" / "raw"
+DEFAULT_DATASET_PATH = RAW_DIR / "du_lieu_nhan_su_tieng_viet_day_du.csv"
 
 LEAVE_LABEL = "Có"
 STAY_LABEL = "Không"

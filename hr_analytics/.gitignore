@@ -9,3 +9,4 @@ data/raw/*.csv
 data/processed/*.csv
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+!data/raw/du_lieu_nhan_su_tieng_viet_day_du.csv

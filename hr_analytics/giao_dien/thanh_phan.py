@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+import weakref
 from tkinter import ttk
 from typing import Callable
 
@@ -12,6 +13,80 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from matplotlib.figure import Figure
 
 from giao_dien.giao_dien_mau import THEME
+
+# Registry dropdown đang sống — đóng khi scroll / đổi trang
+_OPTION_MENU_REFS: list[weakref.ref] = []
+_DROPDOWN_OPEN_PATCHED = False
+
+
+def close_all_dropdowns() -> None:
+    """Đóng mọi CTkOptionMenu đang mở (scroll / đổi tab)."""
+    alive: list[weakref.ref] = []
+    for ref in _OPTION_MENU_REFS:
+        menu = ref()
+        if menu is None:
+            continue
+        alive.append(ref)
+        try:
+            dm = getattr(menu, "_dropdown_menu", None)
+            if dm is not None:
+                dm.close()
+            if hasattr(menu, "_close_on_next_click"):
+                menu._close_on_next_click = False
+        except Exception:  # noqa: BLE001
+            pass
+    _OPTION_MENU_REFS[:] = alive
+
+
+def _patch_dropdown_open_once() -> None:
+    """Linux: dùng post() thay tk_popup() để đóng/unpost ổn định khi scroll."""
+    global _DROPDOWN_OPEN_PATCHED
+    if _DROPDOWN_OPEN_PATCHED:
+        return
+    try:
+        from customtkinter.windows.widgets.core_widget_classes.dropdown_menu import DropdownMenu
+    except Exception:  # noqa: BLE001
+        return
+
+    def _open_fixed(self, x, y) -> None:  # noqa: ANN001
+        y = int(y) + int(self._apply_widget_scaling(3))
+        x = int(x)
+        try:
+            self.unpost()
+        except Exception:  # noqa: BLE001
+            pass
+        self.post(x, y)
+
+    DropdownMenu.open = _open_fixed  # type: ignore[method-assign]
+    _DROPDOWN_OPEN_PATCHED = True
+
+
+def _attach_option_menu_behavior(menu: ctk.CTkOptionMenu) -> None:
+    """Gắn mở đúng dưới trường + đăng ký để đóng hàng loạt."""
+    _patch_dropdown_open_once()
+    _OPTION_MENU_REFS.append(weakref.ref(menu))
+
+    def _open_anchored(_event=None) -> None:
+        close_all_dropdowns()
+        try:
+            menu.update_idletasks()
+            h = max(int(menu.winfo_height()), int(getattr(menu, "_current_height", 0) or 0), 28)
+            x = int(menu.winfo_rootx())
+            y = int(menu.winfo_rooty()) + h
+            menu._dropdown_menu.open(x, y)
+            menu._close_on_next_click = True
+        except Exception:  # noqa: BLE001
+            # fallback hành vi gốc
+            try:
+                menu._dropdown_menu.open(
+                    menu.winfo_rootx(),
+                    menu.winfo_rooty() + menu._apply_widget_scaling(menu._current_height),
+                )
+                menu._close_on_next_click = True
+            except Exception:  # noqa: BLE001
+                pass
+
+    menu._open_dropdown_menu = _open_anchored  # type: ignore[method-assign]
 
 
 def font(size: int = 13, weight: str = "normal") -> ctk.CTkFont:
@@ -26,6 +101,35 @@ class ScrollableFrame(ctk.CTkScrollableFrame):
         kwargs.setdefault("fg_color", THEME.bg)
         kwargs.setdefault("corner_radius", 0)
         super().__init__(master, **kwargs)
+        self._wire_close_dropdowns_on_scroll()
+
+    def _wire_close_dropdowns_on_scroll(self) -> None:
+        """Khi lướt trang / kéo scrollbar → đóng dropdown đang mở."""
+
+        def _on_scroll(_event=None):
+            close_all_dropdowns()
+
+        canvas = getattr(self, "_parent_canvas", None)
+        scrollbar = getattr(self, "_scrollbar", None)
+        if canvas is not None:
+            for seq in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+                canvas.bind(seq, _on_scroll, add="+")
+            if scrollbar is not None:
+                def _yscroll(first, last):
+                    close_all_dropdowns()
+                    try:
+                        scrollbar.set(first, last)
+                    except Exception:  # noqa: BLE001
+                        pass
+
+                canvas.configure(yscrollcommand=_yscroll)
+
+        if scrollbar is not None:
+            for seq in ("<ButtonPress-1>", "<B1-Motion>", "<ButtonRelease-1>"):
+                try:
+                    scrollbar.bind(seq, _on_scroll, add="+")
+                except Exception:  # noqa: BLE001
+                    pass
 
 
 def clear_frame(frame: tk.Misc) -> None:
@@ -522,6 +626,7 @@ def primary_button(parent, text: str, command: Callable, **kwargs) -> ctk.CTkBut
     return ctk.CTkButton(parent, text=text, command=command, **kwargs)
 
 
+<<<<<<< HEAD
 FIELD_BORDER_FOCUS = "#2B6174"
 FIELD_HEIGHT = 28
 FIELD_RADIUS = 9
@@ -691,6 +796,50 @@ def option_menu(parent, values: list[str], variable=None, **kwargs) -> _FieldOpt
     kwargs.setdefault("height", FIELD_HEIGHT)
     kwargs.setdefault("border_color", THEME.border)
     return _FieldOptionMenu(parent, values=values, variable=variable, **kwargs)
+=======
+def option_menu(parent, values: list[str], variable=None, **kwargs) -> ctk.CTkFrame:
+    """Dropdown nền trắng, mũi tên đen, có viền rõ."""
+    height = int(kwargs.pop("height", 30))
+    width = kwargs.pop("width", None)
+    corner = int(kwargs.pop("corner_radius", 8))
+
+    kwargs.setdefault("fg_color", "#FFFFFF")
+    kwargs.setdefault("button_color", "#F3F6F8")
+    kwargs.setdefault("button_hover_color", "#E8EEF2")
+    kwargs.setdefault("text_color", "#111111")
+    kwargs.setdefault("text_color_disabled", "#999999")
+    kwargs.setdefault("dropdown_fg_color", THEME.surface)
+    kwargs.setdefault("dropdown_hover_color", THEME.surface_alt)
+    kwargs.setdefault("dropdown_text_color", THEME.text)
+    kwargs.setdefault("font", font(12))
+    kwargs.setdefault("dropdown_font", font(12))
+
+    wrap_kw: dict = {
+        "fg_color": "#FFFFFF",
+        "border_width": 1,
+        "border_color": THEME.border,
+        "corner_radius": corner,
+        "height": height,
+    }
+    if width is not None:
+        wrap_kw["width"] = width
+    wrap = ctk.CTkFrame(parent, **wrap_kw)
+    # Chỉ khóa kích thước khi có width cố định; còn lại để pack(fill="x") giãn được
+    if width is not None:
+        wrap.pack_propagate(False)
+
+    menu_kw = dict(kwargs)
+    menu_kw["height"] = max(height - 2, 24)
+    menu_kw["corner_radius"] = max(corner - 2, 4)
+    if width is not None:
+        menu_kw["width"] = max(int(width) - 2, 40)
+    menu = ctk.CTkOptionMenu(wrap, values=values or [""], variable=variable, **menu_kw)
+    menu.pack(fill="both", expand=True, padx=1, pady=1)
+    _attach_option_menu_behavior(menu)
+
+    wrap.menu = menu  # type: ignore[attr-defined]
+    return wrap
+>>>>>>> 52081888a1b82ad484f491144745e6fc162ba71d
 
 
 def text_entry(parent, textvariable=None, **kwargs) -> ctk.CTkEntry:

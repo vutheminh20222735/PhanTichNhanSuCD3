@@ -34,6 +34,7 @@ from giao_dien.thanh_phan import (
     ScrollableFrame,
     body_text,
     clear_frame,
+    close_all_dropdowns,
     configure_treeview_style,
     embed_figure,
     font,
@@ -61,6 +62,7 @@ from xu_ly.diem_chat_luong import calculate_quality_score
 from xu_ly.tim_cot_du_lieu import build_schema, detect_target_candidates
 from ket_qua.tao_insight import generate_insights_dynamic
 from ket_qua.tao_khuyen_nghi import generate_recommendations_dynamic
+from ket_qua.xuat_pdf import export_report_pdf
 from mo_hinh.danh_gia import (
     evaluate_all_classifiers,
     evaluate_regression,
@@ -73,7 +75,7 @@ from mo_hinh.du_doan import predict_attrition
 from mo_hinh.huan_luyen import train_classification_models, train_salary_regression
 from xu_ly.lam_sach import clean_dataset, detect_outliers_iqr
 from xu_ly.chuan_bi_du_lieu import get_feature_columns
-from xu_ly.tien_ich import MODELS_DIR, apply_filters, format_vnd, format_vnd_compact
+from xu_ly.tien_ich import DEFAULT_DATASET_PATH, MODELS_DIR, apply_filters, format_vnd, format_vnd_compact
 
 tune_matplotlib_fast()
 ctk.set_appearance_mode("light")
@@ -115,7 +117,9 @@ class PeopleRiskApp(ctk.CTk):
 
         configure_treeview_style(self)
         self._build_shell()
-        self.show_page("upload")
+        self.bind_all("<Escape>", lambda _e: close_all_dropdowns())
+        if not self._load_default_dataset():
+            self.show_page("upload")
 
     # ============================================================ PROPERTIES
     @property
@@ -237,6 +241,7 @@ class PeopleRiskApp(ctk.CTk):
         self.model_pill_host = ctk.CTkFrame(right, fg_color="transparent")
         self.model_pill_host.pack(side="left", padx=4)
         secondary_button(right, "Xuất Excel", self._export, width=100, height=30).pack(side="left", padx=3)
+        secondary_button(right, "Xuất PDF", self._export_pdf, width=100, height=30).pack(side="left", padx=3)
         primary_button(right, "Làm mới", self._refresh, width=90, height=30).pack(side="left", padx=3)
 
         self.content = ScrollableFrame(self.main)
@@ -291,6 +296,7 @@ class PeopleRiskApp(ctk.CTk):
                 btn.configure(fg_color="transparent", text_color=THEME.sidebar_text, font=font(12))
 
     def show_page(self, key: str) -> None:
+        close_all_dropdowns()
         self.current_page = key
         self._page_gen += 1
         self._highlight(key)
@@ -475,9 +481,40 @@ class PeopleRiskApp(ctk.CTk):
             muted=True,
         )
 
+    def _report_payload(self) -> dict[str, Any]:
+        """Gói dữ liệu báo cáo theo bộ lọc hiện tại (Excel + PDF dùng chung)."""
+        df = self._filtered()
+        roles = self.schema.get("roles") or {}
+        kpis = compute_kpis_dynamic(df, roles, self.target)
+        insights = generate_insights_dynamic(df, roles, self.target)
+        recs = generate_recommendations_dynamic(insights)
+        filters = self._active_filters()
+        if filters:
+            filter_note = ", ".join(f"{k}={v}" for k, v in filters.items())
+        else:
+            filter_note = "Không lọc"
+        model_name = None
+        model_metrics = None
+        metrics_table = None
+        if self.eval_result is not None:
+            model_name = self.eval_result.get("best_model_name")
+            metrics_table = self.eval_result.get("metrics_table")
+            if model_name and model_name in (self.eval_result.get("results") or {}):
+                model_metrics = self.eval_result["results"][model_name].get("metrics")
+        return {
+            "df": df,
+            "kpis": kpis,
+            "insights": insights,
+            "recs": recs,
+            "filter_note": filter_note,
+            "model_name": model_name,
+            "model_metrics": model_metrics,
+            "metrics_table": metrics_table,
+        }
+
     def _export(self) -> None:
         if not self.has_dataset:
-            messagebox.showwarning("Xuất báo cáo", "No dataset loaded")
+            messagebox.showwarning("Xuất báo cáo", "Chưa có dataset.")
             return
         path = filedialog.asksaveasfilename(
             defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")],
@@ -486,20 +523,48 @@ class PeopleRiskApp(ctk.CTk):
         if not path:
             return
         try:
-            df = self._filtered()
-            roles = self.schema.get("roles") or {}
-            kpis = compute_kpis_dynamic(df, roles, self.target)
-            insights = generate_insights_dynamic(df, roles, self.target)
-            recs = generate_recommendations_dynamic(insights)
+            payload = self._report_payload()
             with pd.ExcelWriter(path, engine="openpyxl") as w:
-                pd.DataFrame([kpis]).to_excel(w, sheet_name="KPI", index=False)
-                pd.DataFrame(insights).to_excel(w, sheet_name="Insights", index=False)
-                pd.DataFrame(recs).to_excel(w, sheet_name="Recommendations", index=False)
-                if self.eval_result is not None:
-                    self.eval_result["metrics_table"].to_excel(w, sheet_name="Model", index=False)
-            messagebox.showinfo("Xuất báo cáo", f"Đã lưu:\n{path}")
+                pd.DataFrame([payload["kpis"]]).to_excel(w, sheet_name="KPI", index=False)
+                pd.DataFrame(payload["insights"]).to_excel(w, sheet_name="Insights", index=False)
+                pd.DataFrame(payload["recs"]).to_excel(w, sheet_name="Recommendations", index=False)
+                if payload["metrics_table"] is not None:
+                    payload["metrics_table"].to_excel(w, sheet_name="Model", index=False)
+            messagebox.showinfo("Xuất Excel", f"Đã lưu:\n{path}")
         except Exception as exc:  # noqa: BLE001
-            messagebox.showerror("Lỗi", str(exc))
+            messagebox.showerror("Lỗi Excel", str(exc))
+
+    def _export_pdf(self) -> None:
+        if not self.has_dataset:
+            messagebox.showwarning("Xuất PDF", "Chưa có dataset.")
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            filetypes=[("PDF", "*.pdf")],
+            initialfile=f"PeopleRisk_{datetime.now():%Y%m%d_%H%M}.pdf",
+        )
+        if not path:
+            return
+        try:
+            payload = self._report_payload()
+            df = payload["df"]
+            export_report_pdf(
+                path,
+                dataset_name=self.state.name,
+                target=self.target,
+                n_rows=len(df),
+                n_cols=int(df.shape[1]) if not df.empty else 0,
+                filter_note=payload["filter_note"],
+                kpis=payload["kpis"],
+                insights=payload["insights"],
+                recommendations=payload["recs"],
+                model_name=payload["model_name"],
+                model_metrics=payload["model_metrics"],
+                metrics_table=payload["metrics_table"],
+            )
+            messagebox.showinfo("Xuất PDF", f"Đã lưu:\n{path}")
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Lỗi PDF", str(exc))
 
     # ============================================================ UPLOAD
     def _page_upload(self) -> None:
@@ -747,6 +812,41 @@ class PeopleRiskApp(ctk.CTk):
         self._dataset_id = "empty"
         self._refresh_sidebar_dataset()
         self.show_page("upload")
+
+    def _load_default_dataset(self) -> bool:
+        """Nạp CSV mặc định trong data/raw nếu có. Vẫn đổi dataset được qua Nhập Dataset."""
+        path = DEFAULT_DATASET_PATH
+        if not path.is_file():
+            return False
+        try:
+            df, used_enc = try_load_csv(str(path), encoding="utf-8")
+            size = file_size_bytes(path)
+            cands = detect_target_candidates(df)
+            target = cands[0] if cands else (list(df.columns)[0] if len(df.columns) else None)
+            if not target:
+                return False
+            schema = build_schema(df, target=target)
+            profile = profile_dataset(df, target=target)
+            self.state.activate(
+                df,
+                name=path.name,
+                path=str(path),
+                encoding=used_enc,
+                file_size_bytes=size,
+                schema=schema,
+                target=target,
+                profile=profile,
+            )
+            self._dataset_id = df_content_id(df)
+            self._clear_analysis_cache()
+            self._clear_pending()
+            self.filter_vars.clear()
+            self.encoding_var.set(used_enc)
+            self._refresh_sidebar_dataset()
+            self.show_page("dashboard")
+            return True
+        except Exception:  # noqa: BLE001
+            return False
 
     # ============================================================ DASHBOARD
     def _page_dashboard(self) -> None:
