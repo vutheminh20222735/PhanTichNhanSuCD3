@@ -171,8 +171,8 @@ def gallery_specs(df: pd.DataFrame, roles: dict[str, Any], target: str) -> list[
     if income:
         def _income_hist():
             tmp = df.copy()
-            tmp["_inc"] = pd.to_numeric(tmp[income], errors="coerce") / 1_000_000
-            return chart_hist(tmp, "_inc", "Monthly Income", "Triệu VND", _C_ACCENT)
+            tmp["_inc"] = pd.to_numeric(tmp[income], errors="coerce")
+            return chart_hist(tmp, "_inc", "Monthly Income", "USD", _C_ACCENT)
 
         add("4. Phân bố thu nhập", _income_hist)
     add("5. Phân bố nghỉ việc", lambda: chart_attrition_donut(df, target))

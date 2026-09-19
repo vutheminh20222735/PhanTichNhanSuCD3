@@ -20,19 +20,19 @@ STAY_LABEL = "Không"
 def format_vnd(value: float | int | None) -> str:
     if value is None or pd.isna(value):
         return "N/A"
-    return f"{int(round(float(value))):,} VND".replace(",", ".")
+    return f"{int(round(float(value))):,} USD".replace(",", ".")
 
 
 def format_vnd_short(value: float | int | None) -> str:
     if value is None or pd.isna(value):
         return "N/A"
-    return f"{float(value) / 1_000_000:.1f} triệu VND"
+    return f"{int(round(float(value))):,} USD".replace(",", ".")
 
 
 def format_vnd_compact(value: float | int | None) -> str:
     if value is None or pd.isna(value):
         return "N/A"
-    return f"{float(value) / 1_000_000:.2f}M ₫"
+    return f"{int(round(float(value))):,} USD".replace(",", ".")
 
 
 def format_pct(value: float | None, digits: int = 2) -> str:

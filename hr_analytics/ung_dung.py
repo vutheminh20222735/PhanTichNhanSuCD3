@@ -387,6 +387,24 @@ class PeopleRiskApp(ctk.CTk):
         self.pending_target_var = None
         self._clean_report = None
 
+    def _set_upload_status(self, message: str, *, color: str = THEME.text_muted) -> None:
+        if self.upload_status_lbl is not None:
+            self.upload_status_lbl.configure(text=message, text_color=color)
+
+    def _validate_dataset_for_analysis(self, df: pd.DataFrame, target: str | None) -> tuple[bool, str]:
+        if df is None or df.empty:
+            return False, "Dataset rỗng. Vui lòng chọn file CSV có dữ liệu."
+        if df.shape[1] < 2:
+            return False, "Dataset cần tối thiểu 2 cột để phân tích."
+        if target is not None and target not in df.columns:
+            return False, f"Cột target '{target}' không tồn tại trong dataset."
+        if df.isna().all().all():
+            return False, "Tất cả dữ liệu trong dataset đang trống."
+        missing_cols = [col for col in df.columns if df[col].isna().all()]
+        if missing_cols:
+            return False, f"Một số cột toàn dữ liệu trống: {', '.join(missing_cols[:5])}."
+        return True, "Dataset sẵn sàng để phân tích."
+
     # ============================================================ FILTERS
     def _draw_filters(self, on_change) -> None:
         if not self.has_dataset:
@@ -693,11 +711,13 @@ class PeopleRiskApp(ctk.CTk):
         self.dataset_state.status = DatasetStatus.LOADING
         self.dataset_state.error_message = ""
         encoding = self.encoding_var.get() or "utf-8"
-        if self.upload_status_lbl:
-            self.upload_status_lbl.configure(text="Loading…")
+        self._set_upload_status("Đang đọc file CSV…", color=THEME.text_muted)
         self.update_idletasks()
         try:
             df, used_enc = try_load_csv(path, encoding=encoding)
+            valid, msg = self._validate_dataset_for_analysis(df, None)
+            if not valid:
+                raise ValueError(msg)
             size = file_size_bytes(path)
             profile = profile_dataset(df)
             schema = build_schema(df)
@@ -710,11 +730,13 @@ class PeopleRiskApp(ctk.CTk):
             self.pending_schema = schema
             self.encoding_var.set(used_enc)
             self.dataset_state.status = DatasetStatus.EMPTY  # pending until confirm
+            self._set_upload_status("CSV đã đọc xong. Vui lòng chọn target và xác nhận dataset.", color=THEME.accent)
             self.show_page("upload")
         except Exception as exc:  # noqa: BLE001
             self.dataset_state.status = DatasetStatus.ERROR
             self.dataset_state.error_message = str(exc)
             self._clear_pending()
+            self._set_upload_status(str(exc), color="#D64545")
             messagebox.showerror("Lỗi CSV", str(exc))
             self.show_page("upload")
 
@@ -739,6 +761,11 @@ class PeopleRiskApp(ctk.CTk):
         if self.pending_target_var is None:
             return
         target = self.pending_target_var.get()
+        valid, msg = self._validate_dataset_for_analysis(df, target)
+        if not valid:
+            self._set_upload_status(msg, color="#D64545")
+            messagebox.showerror("Dataset không hợp lệ", msg)
+            return
         if not target or target not in df.columns:
             messagebox.showerror("Target", f"Cột target `{target}` không tồn tại.")
             return
@@ -1283,7 +1310,10 @@ class PeopleRiskApp(ctk.CTk):
             if err:
                 messagebox.showerror("Train error", err)
                 return
+
             status.configure(text="Đang train Logistic Regression & Random Forest...")
+            train_btn.configure(state="disabled", text="Đang huấn luyện...")
+            reg_btn.configure(state="disabled")
             self.update_idletasks()
             try:
                 tr = train_classification_models(self.df, save=True, target=tgt)
@@ -1298,9 +1328,14 @@ class PeopleRiskApp(ctk.CTk):
                     "feature_columns": tr["feature_columns"],
                 })
                 joblib.dump(meta, meta_path)
+                status.configure(text=f"Hoàn tất huấn luyện phân loại — {ev['best_model_name']}")
                 self.show_page("model")
             except Exception as exc:  # noqa: BLE001
+                status.configure(text=f"Huấn luyện phân loại thất bại: {exc}")
                 messagebox.showerror("Train error", str(exc))
+            finally:
+                train_btn.configure(state="normal", text="Huấn luyện phân loại")
+                reg_btn.configure(state="normal")
 
         def train_reg() -> None:
             roles = self.schema.get("roles") or {}
@@ -1310,19 +1345,29 @@ class PeopleRiskApp(ctk.CTk):
                     "Salary analysis unavailable — no salary column detected.",
                 )
                 return
+
             status.configure(text="Đang train Salary Regression...")
+            train_btn.configure(state="disabled")
+            reg_btn.configure(state="disabled", text="Đang huấn luyện...")
             self.update_idletasks()
             try:
                 sal = train_salary_regression(self.df, save=True)
                 self.salary_eval = evaluate_regression(sal["pipeline"], sal["X_test"], sal["y_test"])
+                status.configure(text="Hoàn tất huấn luyện hồi quy thu nhập.")
                 self.show_page("model")
             except Exception as exc:  # noqa: BLE001
+                status.configure(text=f"Huấn luyện hồi quy thất bại: {exc}")
                 messagebox.showwarning("Regression", str(exc))
+            finally:
+                train_btn.configure(state="normal")
+                reg_btn.configure(state="normal", text="Huấn luyện hồi quy thu nhập")
 
         btns = ctk.CTkFrame(intro, fg_color="transparent")
         btns.pack(anchor="w", padx=10, pady=8)
-        primary_button(btns, "Huấn luyện phân loại", train_cls, width=180).pack(side="left", padx=3)
-        secondary_button(btns, "Huấn luyện hồi quy thu nhập", train_reg, width=210).pack(side="left", padx=3)
+        train_btn = primary_button(btns, "Huấn luyện phân loại", train_cls, width=180)
+        train_btn.pack(side="left", padx=3)
+        reg_btn = secondary_button(btns, "Huấn luyện hồi quy thu nhập", train_reg, width=210)
+        reg_btn.pack(side="left", padx=3)
 
         pre_err = _target_ok()
         if pre_err and self.eval_result is None:
