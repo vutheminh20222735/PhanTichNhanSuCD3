@@ -550,7 +550,7 @@ class PeopleRiskApp(ctk.CTk):
             df = payload["df"]
             export_report_pdf(
                 path,
-                dataset_name=self.state.name,
+                dataset_name=self.dataset_state.name,
                 target=self.target,
                 n_rows=len(df),
                 n_cols=int(df.shape[1]) if not df.empty else 0,
@@ -827,7 +827,7 @@ class PeopleRiskApp(ctk.CTk):
                 return False
             schema = build_schema(df, target=target)
             profile = profile_dataset(df, target=target)
-            self.state.activate(
+            self.dataset_state.activate(
                 df,
                 name=path.name,
                 path=str(path),

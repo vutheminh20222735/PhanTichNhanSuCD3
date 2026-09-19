@@ -626,7 +626,6 @@ def primary_button(parent, text: str, command: Callable, **kwargs) -> ctk.CTkBut
     return ctk.CTkButton(parent, text=text, command=command, **kwargs)
 
 
-<<<<<<< HEAD
 FIELD_BORDER_FOCUS = "#2B6174"
 FIELD_HEIGHT = 28
 FIELD_RADIUS = 9
@@ -796,8 +795,9 @@ def option_menu(parent, values: list[str], variable=None, **kwargs) -> _FieldOpt
     kwargs.setdefault("height", FIELD_HEIGHT)
     kwargs.setdefault("border_color", THEME.border)
     return _FieldOptionMenu(parent, values=values, variable=variable, **kwargs)
-=======
-def option_menu(parent, values: list[str], variable=None, **kwargs) -> ctk.CTkFrame:
+
+
+def option_menu_legacy(parent, values: list[str], variable=None, **kwargs) -> ctk.CTkFrame:
     """Dropdown nền trắng, mũi tên đen, có viền rõ."""
     height = int(kwargs.pop("height", 30))
     width = kwargs.pop("width", None)
@@ -824,7 +824,6 @@ def option_menu(parent, values: list[str], variable=None, **kwargs) -> ctk.CTkFr
     if width is not None:
         wrap_kw["width"] = width
     wrap = ctk.CTkFrame(parent, **wrap_kw)
-    # Chỉ khóa kích thước khi có width cố định; còn lại để pack(fill="x") giãn được
     if width is not None:
         wrap.pack_propagate(False)
 
@@ -839,7 +838,6 @@ def option_menu(parent, values: list[str], variable=None, **kwargs) -> ctk.CTkFr
 
     wrap.menu = menu  # type: ignore[attr-defined]
     return wrap
->>>>>>> 52081888a1b82ad484f491144745e6fc162ba71d
 
 
 def text_entry(parent, textvariable=None, **kwargs) -> ctk.CTkEntry:
