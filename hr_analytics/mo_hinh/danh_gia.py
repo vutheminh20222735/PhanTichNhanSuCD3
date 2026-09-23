@@ -86,7 +86,8 @@ def evaluate_all_classifiers(
         f"Dựa trên mục tiêu phát hiện nhân viên có nguy cơ nghỉ việc, "
         f"model được chọn là **{best_name}** vì có Recall = {best_row['Recall']:.4f}, "
         f"F1 = {best_row['F1']:.4f}, ROC-AUC = {best_row['ROC-AUC']:.4f} "
-        f"(so sánh trên tập test). Không mặc định Random Forest luôn tốt hơn."
+        f"(so sánh trên tập test, ưu tiên Recall). "
+        f"Đã so sánh {len(models)} mô hình."
     )
 
     return {
@@ -96,6 +97,20 @@ def evaluate_all_classifiers(
         "best_model_name": best_name,
         "selection_reason": selection_reason,
     }
+
+
+def merge_cv_into_metrics(
+    metrics_table: pd.DataFrame,
+    cv_table: pd.DataFrame | None,
+) -> pd.DataFrame:
+    """Ghép cột CV_* vào bảng so sánh test (nếu có)."""
+    if cv_table is None or getattr(cv_table, "empty", True):
+        return metrics_table
+    keep = [c for c in cv_table.columns if c == "Model" or c.startswith("CV_")]
+    # Chỉ lấy mean, bỏ std để bảng gọn; std vẫn nằm trong cv_table gốc
+    mean_cols = [c for c in keep if c == "Model" or (c.startswith("CV_") and not c.endswith("_std"))]
+    merged = metrics_table.merge(cv_table[mean_cols], on="Model", how="left")
+    return merged
 
 
 def plot_confusion_matrix(cm: np.ndarray, model_name: str):

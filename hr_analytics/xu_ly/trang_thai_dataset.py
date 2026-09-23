@@ -39,6 +39,11 @@ class DatasetState:
     train_result: Any = None
     eval_result: Any = None
     salary_eval: Any = None
+    shap_global: Any = None
+    shap_local: Any = None
+    last_prediction: Any = None
+    batch_result: Any = None
+    whatif_result: Any = None
     model_status: str = "Not trained"
     filter_state: dict[str, str] = field(default_factory=dict)
     cache_store: dict[str, Any] = field(default_factory=dict)
@@ -83,6 +88,11 @@ class DatasetState:
         self.train_result = None
         self.eval_result = None
         self.salary_eval = None
+        self.shap_global = None
+        self.shap_local = None
+        self.last_prediction = None
+        self.batch_result = None
+        self.whatif_result = None
         self.model_status = "Not trained"
         self.filter_state.clear()
         self.cache_store.clear()

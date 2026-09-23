@@ -63,16 +63,30 @@ from xu_ly.tim_cot_du_lieu import build_schema, detect_target_candidates
 from ket_qua.tao_insight import generate_insights_dynamic
 from ket_qua.tao_khuyen_nghi import generate_recommendations_dynamic
 from ket_qua.xuat_pdf import export_report_pdf
+from ket_qua.xuat_word import export_report_word
 from mo_hinh.danh_gia import (
     evaluate_all_classifiers,
     evaluate_regression,
     get_rf_feature_importance,
+    merge_cv_into_metrics,
     plot_confusion_matrix,
     plot_feature_importance,
     plot_roc_curves,
 )
-from mo_hinh.du_doan import predict_attrition
-from mo_hinh.huan_luyen import train_classification_models, train_salary_regression
+from mo_hinh.du_doan import (
+    predict_attrition,
+    predict_attrition_batch,
+    simulate_what_if,
+    summarize_batch_risk,
+)
+from mo_hinh.giai_thich import (
+    explain_global_shap,
+    explain_local_shap,
+    plot_global_shap,
+    plot_local_shap,
+    shap_section_for_report,
+)
+from mo_hinh.huan_luyen import HAS_XGBOOST, train_classification_models, train_salary_regression
 from xu_ly.lam_sach import clean_dataset, detect_outliers_iqr
 from xu_ly.chuan_bi_du_lieu import get_feature_columns
 from xu_ly.tien_ich import DEFAULT_DATASET_PATH, MODELS_DIR, apply_filters, format_vnd, format_vnd_compact
@@ -174,6 +188,46 @@ class PeopleRiskApp(ctk.CTk):
     def model_status(self, value: str) -> None:
         self.dataset_state.model_status = value
 
+    @property
+    def shap_global(self):
+        return self.dataset_state.shap_global
+
+    @shap_global.setter
+    def shap_global(self, value) -> None:
+        self.dataset_state.shap_global = value
+
+    @property
+    def shap_local(self):
+        return self.dataset_state.shap_local
+
+    @shap_local.setter
+    def shap_local(self, value) -> None:
+        self.dataset_state.shap_local = value
+
+    @property
+    def last_prediction(self):
+        return self.dataset_state.last_prediction
+
+    @last_prediction.setter
+    def last_prediction(self, value) -> None:
+        self.dataset_state.last_prediction = value
+
+    @property
+    def batch_result(self):
+        return self.dataset_state.batch_result
+
+    @batch_result.setter
+    def batch_result(self, value) -> None:
+        self.dataset_state.batch_result = value
+
+    @property
+    def whatif_result(self):
+        return self.dataset_state.whatif_result
+
+    @whatif_result.setter
+    def whatif_result(self, value) -> None:
+        self.dataset_state.whatif_result = value
+
     # ============================================================ SHELL
     def _build_shell(self) -> None:
         self.grid_columnconfigure(1, weight=1)
@@ -242,6 +296,7 @@ class PeopleRiskApp(ctk.CTk):
         self.model_pill_host.pack(side="left", padx=4)
         secondary_button(right, "Xuất Excel", self._export, width=100, height=30).pack(side="left", padx=3)
         secondary_button(right, "Xuất PDF", self._export_pdf, width=100, height=30).pack(side="left", padx=3)
+        secondary_button(right, "Xuất Word", self._export_word, width=100, height=30).pack(side="left", padx=3)
         primary_button(right, "Làm mới", self._refresh, width=90, height=30).pack(side="left", padx=3)
 
         self.content = ScrollableFrame(self.main)
@@ -317,6 +372,7 @@ class PeopleRiskApp(ctk.CTk):
             "viz": self._page_viz,
             "model": self._page_model,
             "predict": self._page_predict,
+            "batch": self._page_batch,
             "insights": self._page_insights,
             "recs": self._page_recs,
         }[key]()
@@ -500,7 +556,7 @@ class PeopleRiskApp(ctk.CTk):
         )
 
     def _report_payload(self) -> dict[str, Any]:
-        """Gói dữ liệu báo cáo theo bộ lọc hiện tại (Excel + PDF dùng chung)."""
+        """Gói dữ liệu báo cáo theo bộ lọc hiện tại (Excel + PDF + Word dùng chung)."""
         df = self._filtered()
         roles = self.schema.get("roles") or {}
         kpis = compute_kpis_dynamic(df, roles, self.target)
@@ -519,6 +575,12 @@ class PeopleRiskApp(ctk.CTk):
             metrics_table = self.eval_result.get("metrics_table")
             if model_name and model_name in (self.eval_result.get("results") or {}):
                 model_metrics = self.eval_result["results"][model_name].get("metrics")
+        shap_section = shap_section_for_report(
+            global_result=self.shap_global,
+            local_result=self.shap_local,
+            prediction=self.last_prediction,
+            model_name=model_name,
+        )
         return {
             "df": df,
             "kpis": kpis,
@@ -528,6 +590,7 @@ class PeopleRiskApp(ctk.CTk):
             "model_name": model_name,
             "model_metrics": model_metrics,
             "metrics_table": metrics_table,
+            "shap_section": shap_section,
         }
 
     def _export(self) -> None:
@@ -548,6 +611,11 @@ class PeopleRiskApp(ctk.CTk):
                 pd.DataFrame(payload["recs"]).to_excel(w, sheet_name="Recommendations", index=False)
                 if payload["metrics_table"] is not None:
                     payload["metrics_table"].to_excel(w, sheet_name="Model", index=False)
+                shap = payload.get("shap_section") or {}
+                if shap.get("global_top"):
+                    pd.DataFrame(shap["global_top"]).to_excel(w, sheet_name="SHAP_Global", index=False)
+                if shap.get("local_top"):
+                    pd.DataFrame(shap["local_top"]).to_excel(w, sheet_name="SHAP_Local", index=False)
             messagebox.showinfo("Xuất Excel", f"Đã lưu:\n{path}")
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Lỗi Excel", str(exc))
@@ -579,10 +647,44 @@ class PeopleRiskApp(ctk.CTk):
                 model_name=payload["model_name"],
                 model_metrics=payload["model_metrics"],
                 metrics_table=payload["metrics_table"],
+                shap_section=payload.get("shap_section"),
             )
             messagebox.showinfo("Xuất PDF", f"Đã lưu:\n{path}")
         except Exception as exc:  # noqa: BLE001
             messagebox.showerror("Lỗi PDF", str(exc))
+
+    def _export_word(self) -> None:
+        if not self.has_dataset:
+            messagebox.showwarning("Xuất Word", "Chưa có dataset.")
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".docx",
+            filetypes=[("Word", "*.docx")],
+            initialfile=f"PeopleRisk_{datetime.now():%Y%m%d_%H%M}.docx",
+        )
+        if not path:
+            return
+        try:
+            payload = self._report_payload()
+            df = payload["df"]
+            export_report_word(
+                path,
+                dataset_name=self.dataset_state.name,
+                target=self.target,
+                n_rows=len(df),
+                n_cols=int(df.shape[1]) if not df.empty else 0,
+                filter_note=payload["filter_note"],
+                kpis=payload["kpis"],
+                insights=payload["insights"],
+                recommendations=payload["recs"],
+                model_name=payload["model_name"],
+                model_metrics=payload["model_metrics"],
+                metrics_table=payload["metrics_table"],
+                shap_section=payload.get("shap_section"),
+            )
+            messagebox.showinfo("Xuất Word", f"Đã lưu:\n{path}")
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Lỗi Word", str(exc))
 
     # ============================================================ UPLOAD
     def _page_upload(self) -> None:
@@ -1280,7 +1382,14 @@ class PeopleRiskApp(ctk.CTk):
     def _page_model(self) -> None:
         root = self.content
         tgt = self.target
-        intro = panel(root, "Phân loại nghỉ việc", f"Target: {tgt or '—'}  ·  Train/Test 80/20 (stratify)")
+        intro = panel(
+            root,
+            "Phân loại nghỉ việc",
+            "Target: "
+            + (tgt or "—")
+            + "  ·  Train/Test 80/20 + Stratified 5-Fold CV  ·  LR / RF / GB"
+            + (" / XGB" if HAS_XGBOOST else ""),
+        )
         intro.pack(fill="x", padx=6, pady=6)
         status = ctk.CTkLabel(intro, text="", font=font(11), text_color=THEME.text_muted)
         status.pack(anchor="w", padx=12)
@@ -1311,15 +1420,27 @@ class PeopleRiskApp(ctk.CTk):
                 messagebox.showerror("Train error", err)
                 return
 
-            status.configure(text="Đang train Logistic Regression & Random Forest...")
+            status.configure(text="Đang train LR / RF / GB" + (" / XGB" if HAS_XGBOOST else "") + " + CV...")
             train_btn.configure(state="disabled", text="Đang huấn luyện...")
             reg_btn.configure(state="disabled")
             self.update_idletasks()
             try:
-                tr = train_classification_models(self.df, save=True, target=tgt)
+                tr = train_classification_models(self.df, save=True, target=tgt, run_cv=True)
                 ev = evaluate_all_classifiers(tr["models"], tr["X_test"], tr["y_test"])
+                if tr.get("cv_table") is not None:
+                    ev["cv_table"] = tr["cv_table"]
+                    ev["metrics_table"] = merge_cv_into_metrics(ev["metrics_table"], tr["cv_table"])
+                    ev["selection_reason"] = (
+                        ev["selection_reason"]
+                        + f" Đã chạy Stratified {tr.get('cv_folds', 5)}-Fold CV để kiểm tra độ ổn định."
+                    )
                 self.train_result, self.eval_result = tr, ev
                 self.model_status = ev["best_model_name"]
+                self.shap_local = None
+                self.last_prediction = None
+                status.configure(text="Đang tính SHAP toàn cục...")
+                self.update_idletasks()
+                self._compute_global_shap(prefer_model="Random Forest")
                 meta_path = MODELS_DIR / "feature_meta.joblib"
                 meta = joblib.load(meta_path) if meta_path.exists() else {}
                 meta.update({
@@ -1328,7 +1449,11 @@ class PeopleRiskApp(ctk.CTk):
                     "feature_columns": tr["feature_columns"],
                 })
                 joblib.dump(meta, meta_path)
-                status.configure(text=f"Hoàn tất huấn luyện phân loại — {ev['best_model_name']}")
+                n_models = len(tr["models"])
+                status.configure(
+                    text=f"Hoàn tất {n_models} mô hình — chọn: {ev['best_model_name']}"
+                    + (f" · CV {tr.get('cv_folds')}-fold" if tr.get("cv_table") is not None else "")
+                )
                 self.show_page("model")
             except Exception as exc:  # noqa: BLE001
                 status.configure(text=f"Huấn luyện phân loại thất bại: {exc}")
@@ -1386,35 +1511,62 @@ class PeopleRiskApp(ctk.CTk):
                 make_kpi_card(mr, k, f"{m[k]:.4f}", tone="accent" if k in ("Recall", "F1") else "brand").grid(
                     row=0, column=i, sticky="nsew", padx=3
                 )
-            section_title(root, "So sánh mô hình")
-            show_dataframe(root, self.eval_result["metrics_table"], height=90, page_size=5)
+            section_title(root, "So sánh mô hình (Test + CV)")
+            show_dataframe(root, self.eval_result["metrics_table"], height=140, page_size=8)
+            if self.eval_result.get("cv_table") is not None:
+                section_title(root, "Chi tiết Cross-Validation (mean ± std)")
+                show_dataframe(root, self.eval_result["cv_table"], height=140, page_size=8)
             conclusion = panel(root, "Model được chọn")
             conclusion.pack(fill="x", padx=6, pady=6)
             body_text(conclusion, self.eval_result["selection_reason"].replace("**", ""))
 
+            names = list(self.eval_result["results"].keys())
             grid = ctk.CTkFrame(root, fg_color="transparent")
             grid.pack(fill="x")
-            grid.grid_columnconfigure(0, weight=1)
-            grid.grid_columnconfigure(1, weight=1)
+            cols = min(2, len(names)) or 1
+            for c in range(cols):
+                grid.grid_columnconfigure(c, weight=1)
             for idx, (name, ev) in enumerate(self.eval_result["results"].items()):
                 cell = ctk.CTkFrame(grid, fg_color="transparent")
-                cell.grid(row=0, column=idx, sticky="nsew", padx=2)
+                cell.grid(row=idx // cols, column=idx % cols, sticky="nsew", padx=2, pady=2)
                 fig = plot_confusion_matrix(ev["confusion_matrix"], name)
-                embed_figure(cell, fig, 250, f"Confusion — {name}")
+                embed_figure(cell, fig, 230, f"Confusion — {name}")
                 plt.close(fig)
 
             fig = plot_roc_curves(self.eval_result["results"], self.train_result["y_test"])
-            embed_figure(root, fig, 300, "ROC Curve")
+            embed_figure(root, fig, 300, "ROC Curve — so sánh tất cả mô hình")
             plt.close(fig)
-            fi = get_rf_feature_importance(
-                self.train_result["models"]["Random Forest"],
-                self.train_result["numeric_features"],
-                self.train_result["categorical_features"], 15,
-            )
-            show_dataframe(root, fi, height=220, page_size=15)
-            fig = plot_feature_importance(fi)
-            embed_figure(root, fig, 300, "Feature Importance")
-            plt.close(fig)
+            if "Random Forest" in self.train_result.get("models", {}):
+                fi = get_rf_feature_importance(
+                    self.train_result["models"]["Random Forest"],
+                    self.train_result["numeric_features"],
+                    self.train_result["categorical_features"], 15,
+                )
+                show_dataframe(root, fi, height=220, page_size=15)
+                fig = plot_feature_importance(fi, title="Feature Importance — Random Forest")
+                embed_figure(root, fig, 300, "Feature Importance (RF)")
+                plt.close(fig)
+
+            section_title(root, "Giải thích SHAP (toàn cục)", "mean(|SHAP|) — yếu tố ảnh hưởng mạnh nhất")
+            if self.shap_global is None:
+                body_text(root, "Chưa có SHAP — bấm «Tính SHAP toàn cục» hoặc huấn luyện lại.", muted=True)
+                secondary_button(root, "Tính SHAP toàn cục", self._run_global_shap_ui, width=180).pack(
+                    anchor="w", padx=12, pady=4
+                )
+            else:
+                body_text(root, self.shap_global.get("narrative", ""), muted=False)
+                show_dataframe(root, self.shap_global["importance"], height=220, page_size=15)
+                fig = plot_global_shap(self.shap_global["importance"])
+                embed_figure(root, fig, 300, "SHAP toàn cục")
+                plt.close(fig)
+                export_row = ctk.CTkFrame(root, fg_color="transparent")
+                export_row.pack(anchor="w", padx=10, pady=6)
+                secondary_button(export_row, "Xuất PDF (+SHAP)", self._export_pdf, width=150).pack(
+                    side="left", padx=3
+                )
+                secondary_button(export_row, "Xuất Word (+SHAP)", self._export_word, width=160).pack(
+                    side="left", padx=3
+                )
 
         section_title(root, "Hồi quy thu nhập")
         roles = self.schema.get("roles") or {}
@@ -1572,46 +1724,372 @@ class PeopleRiskApp(ctk.CTk):
         result_host = ctk.CTkFrame(root, fg_color="transparent")
         result_host.pack(fill="x", padx=4, pady=8)
 
+        # --- What-if ---
+        whatif_panel = panel(
+            root,
+            "What-if — mô phỏng giữ chân",
+            "Đổi vài yếu tố (OT, lương, hài lòng…) rồi so sánh xác suất trước/sau",
+        )
+        whatif_panel.pack(fill="x", padx=6, pady=8)
+        self.whatif_vars: dict[str, ctk.StringVar] = {}
+        # Gợi ý cột quan trọng theo role
+        whatif_candidates: list[str] = []
+        for rk in ["overtime", "income", "job_satisfaction", "worklife", "env_satisfaction", "salary_hike"]:
+            col = roles.get(rk)
+            if col and col in feature_cols:
+                whatif_candidates.append(col)
+        for col in feature_cols:
+            if col not in whatif_candidates and len(whatif_candidates) < 6:
+                # ưu tiên numeric
+                if col in numeric_set or pd.api.types.is_numeric_dtype(self.df[col]):
+                    whatif_candidates.append(col)
+        whatif_candidates = whatif_candidates[:6]
+        wi_grid = ctk.CTkFrame(whatif_panel, fg_color="transparent")
+        wi_grid.pack(fill="x", padx=10, pady=6)
+        for i in range(3):
+            wi_grid.grid_columnconfigure(i, weight=1)
+        for idx, col in enumerate(whatif_candidates):
+            cell = ctk.CTkFrame(wi_grid, fg_color="transparent")
+            cell.grid(row=idx // 3, column=idx % 3, sticky="ew", padx=4, pady=3)
+            ctk.CTkLabel(cell, text=f"Đổi «{col}»", font=font(10, "bold"), text_color=THEME.text_muted).pack(
+                anchor="w"
+            )
+            var = ctk.StringVar(value="")
+            self.whatif_vars[col] = var
+            if col in numeric_set or pd.api.types.is_numeric_dtype(self.df[col]):
+                text_entry(cell, textvariable=var, placeholder_text="để trống = giữ nguyên", height=28).pack(fill="x")
+            else:
+                opts = [""] + sorted(self.df[col].dropna().astype(str).unique().tolist())[:80]
+                option_menu(cell, values=opts if opts else [""], variable=var, height=28).pack(fill="x")
+        whatif_host = ctk.CTkFrame(whatif_panel, fg_color="transparent")
+        whatif_host.pack(fill="x", padx=8, pady=6)
+
+        def _collect_inputs(feats: list[str]) -> dict[str, Any]:
+            inputs: dict[str, Any] = {}
+            for col in feats:
+                if col in self.predict_vars:
+                    kind, var = self.predict_vars[col]
+                    raw = var.get()
+                    if kind == "num":
+                        inputs[col] = float(str(raw).replace(",", ""))
+                    else:
+                        inputs[col] = raw
+                elif col in self.df.columns:
+                    if pd.api.types.is_numeric_dtype(self.df[col]):
+                        med = pd.to_numeric(self.df[col], errors="coerce").median()
+                        inputs[col] = float(med) if pd.notna(med) else 0.0
+                    else:
+                        mode = self.df[col].mode()
+                        inputs[col] = mode.iloc[0] if len(mode) else ""
+                else:
+                    raise ValueError(f"Thiếu feature `{col}` — huấn luyện lại trên dataset hiện tại.")
+            return inputs
+
         def run() -> None:
             try:
                 model, feats, name = self._ensure_classifier_trained(force=False)
                 self._set_header(self.current_page)
-                inputs: dict[str, Any] = {}
-                for col in feats:
-                    if col in self.predict_vars:
-                        kind, var = self.predict_vars[col]
-                        raw = var.get()
-                        if kind == "num":
-                            inputs[col] = float(str(raw).replace(",", ""))
-                        else:
-                            inputs[col] = raw
-                    elif col in self.df.columns:
-                        if pd.api.types.is_numeric_dtype(self.df[col]):
-                            med = pd.to_numeric(self.df[col], errors="coerce").median()
-                            inputs[col] = float(med) if pd.notna(med) else 0.0
-                        else:
-                            mode = self.df[col].mode()
-                            inputs[col] = mode.iloc[0] if len(mode) else ""
-                    else:
-                        raise ValueError(f"Thiếu feature `{col}` — huấn luyện lại trên dataset hiện tại.")
+                inputs = _collect_inputs(feats)
                 result = predict_attrition(model, inputs, feature_columns=feats)
+                self.last_prediction = {
+                    **result,
+                    "model_name": name,
+                    "inputs": inputs,
+                }
                 clear_frame(result_host)
                 risk_result_card(
                     result_host, result["probability_pct"], result["risk_band"],
                     result["prediction"], name,
                 )
-                if self.train_result and "Random Forest" in self.train_result.get("models", {}):
-                    fi = get_rf_feature_importance(
-                        self.train_result["models"]["Random Forest"],
+
+                # SHAP cục bộ
+                section_title(result_host, "Giải thích SHAP (cục bộ)", "Yếu tố đẩy tăng/giảm nguy cơ nghỉ việc")
+                try:
+                    if self.shap_global is None:
+                        self._compute_global_shap(prefer_model="Random Forest")
+                    local = explain_local_shap(
+                        model,
+                        inputs,
+                        feats,
                         self.train_result["numeric_features"],
-                        self.train_result["categorical_features"], 8,
+                        self.train_result["categorical_features"],
+                        self.train_result["X_train"],
+                        top_n=10,
                     )
-                    section_title(result_host, "Yếu tố đóng góp (Feature Importance — RF)")
-                    show_dataframe(result_host, fi, height=160, page_size=8)
+                    self.shap_local = local
+                    body_text(result_host, local.get("narrative", ""))
+                    show_dataframe(result_host, local["contributions"], height=200, page_size=10)
+                    fig = plot_local_shap(local["contributions"])
+                    embed_figure(result_host, fig, 280, "SHAP cục bộ")
+                    plt.close(fig)
+                except Exception as shap_exc:  # noqa: BLE001
+                    body_text(
+                        result_host,
+                        f"Không tính được SHAP cục bộ: {shap_exc}",
+                        muted=True,
+                    )
+
+                export_row = ctk.CTkFrame(result_host, fg_color="transparent")
+                export_row.pack(anchor="w", padx=8, pady=8)
+                secondary_button(export_row, "Xuất PDF (+SHAP)", self._export_pdf, width=150).pack(
+                    side="left", padx=3
+                )
+                secondary_button(export_row, "Xuất Word (+SHAP)", self._export_word, width=160).pack(
+                    side="left", padx=3
+                )
             except Exception as exc:  # noqa: BLE001
                 messagebox.showerror("Dự báo", str(exc))
 
-        primary_button(root, "Chấm điểm rủi ro", run, width=200, height=42).pack(anchor="w", padx=10, pady=8)
+        def run_whatif() -> None:
+            try:
+                model, feats, name = self._ensure_classifier_trained(force=False)
+                base = _collect_inputs(feats)
+                changes = {c: v.get() for c, v in self.whatif_vars.items()}
+                if not any(str(v).strip() for v in changes.values()):
+                    messagebox.showwarning("What-if", "Nhập ít nhất một giá trị thay đổi.")
+                    return
+                sim = simulate_what_if(model, base, changes, feats)
+                self.whatif_result = {**sim, "model_name": name}
+                clear_frame(whatif_host)
+                body_text(whatif_host, sim["message"])
+                applied = sim.get("applied_changes") or {}
+                if applied:
+                    body_text(
+                        whatif_host,
+                        "Thay đổi áp dụng: " + ", ".join(f"{k}={v}" for k, v in applied.items()),
+                        muted=True,
+                    )
+                cmp = pd.DataFrame([
+                    {
+                        "Kịch bản": "Hiện tại",
+                        "Xác suất (%)": sim["baseline"]["probability_pct"],
+                        "Mức rủi ro": sim["baseline"]["risk_band"],
+                        "Dự đoán": sim["baseline"]["prediction"],
+                    },
+                    {
+                        "Kịch bản": "What-if",
+                        "Xác suất (%)": sim["after"]["probability_pct"],
+                        "Mức rủi ro": sim["after"]["risk_band"],
+                        "Dự đoán": sim["after"]["prediction"],
+                    },
+                ])
+                show_dataframe(whatif_host, cmp, height=90, page_size=3)
+                make_kpi_card(
+                    whatif_host,
+                    "Δ điểm %",
+                    f"{sim['delta_pp']:+.1f}",
+                    tone="success" if sim["delta_pp"] < 0 else ("danger" if sim["delta_pp"] > 0 else "brand"),
+                ).pack(anchor="w", padx=8, pady=6)
+            except Exception as exc:  # noqa: BLE001
+                messagebox.showerror("What-if", str(exc))
+
+        btn_row = ctk.CTkFrame(root, fg_color="transparent")
+        btn_row.pack(anchor="w", padx=10, pady=8)
+        primary_button(btn_row, "Chấm điểm rủi ro", run, width=180, height=42).pack(side="left", padx=3)
+        secondary_button(btn_row, "Chạy What-if", run_whatif, width=150, height=42).pack(side="left", padx=3)
+
+    # ============================================================ BATCH PREDICT
+    def _page_batch(self) -> None:
+        root = self.content
+        tgt = self.target
+        roles = self.schema.get("roles") or {}
+        id_col = self.schema.get("id_col") or roles.get("id")
+
+        intro = panel(
+            root,
+            "Dự báo hàng loạt",
+            "Chấm điểm rủi ro cho toàn bộ dataset hiện tại (hoặc CSV khác) → lọc High risk → xuất Excel",
+        )
+        intro.pack(fill="x", padx=6, pady=6)
+
+        if not tgt or tgt not in self.df.columns:
+            body_text(root, "Chưa chọn target. Vào Nhập Dataset để chọn.")
+            return
+
+        status = ctk.CTkLabel(intro, text="", font=font(11), text_color=THEME.text_muted)
+        status.pack(anchor="w", padx=12, pady=(0, 6))
+
+        source_var = ctk.StringVar(value="current")
+        src_row = ctk.CTkFrame(intro, fg_color="transparent")
+        src_row.pack(anchor="w", padx=12, pady=4)
+        ctk.CTkRadioButton(src_row, text="Dataset đang mở", variable=source_var, value="current").pack(
+            side="left", padx=4
+        )
+        ctk.CTkRadioButton(src_row, text="Upload CSV khác", variable=source_var, value="file").pack(
+            side="left", padx=4
+        )
+
+        band_var = ctk.StringVar(value="All")
+        filter_row = ctk.CTkFrame(intro, fg_color="transparent")
+        filter_row.pack(anchor="w", padx=12, pady=4)
+        ctk.CTkLabel(filter_row, text="Lọc mức rủi ro", font=font(11, "bold"), text_color=THEME.text_muted).pack(
+            side="left", padx=(0, 8)
+        )
+        option_menu(
+            filter_row,
+            values=["All", "High", "Medium", "Low"],
+            variable=band_var,
+            width=120,
+            height=28,
+        ).pack(side="left")
+
+        result_host = ctk.CTkFrame(root, fg_color="transparent")
+        result_host.pack(fill="both", expand=True, padx=4, pady=8)
+        self._batch_file_path: str | None = getattr(self, "_batch_file_path", None)
+
+        def _pick_batch_csv() -> None:
+            path = filedialog.askopenfilename(filetypes=[("CSV", "*.csv")])
+            if path:
+                self._batch_file_path = path
+                status.configure(text=f"File batch: {Path(path).name}")
+
+        def _load_batch_df() -> pd.DataFrame:
+            if source_var.get() == "file":
+                if not self._batch_file_path:
+                    raise ValueError("Chưa chọn file CSV batch.")
+                df_loaded, _enc = try_load_csv(self._batch_file_path)
+                return df_loaded
+            return self.df.copy()
+
+        def run_batch() -> None:
+            try:
+                model, feats, name = self._ensure_classifier_trained(force=False)
+                df_batch = _load_batch_df()
+                keep = []
+                for rk in ["department", "job_role", "overtime", "income", "age"]:
+                    col = roles.get(rk)
+                    if col and col in df_batch.columns:
+                        keep.append(col)
+                scored = predict_attrition_batch(
+                    model, df_batch, feats, id_col=id_col if id_col in df_batch.columns else None, keep_cols=keep
+                )
+                summary = summarize_batch_risk(scored)
+                self.batch_result = {"scored": scored, "summary": summary, "model_name": name}
+                _render_batch(scored, summary, name)
+                status.configure(
+                    text=f"Đã chấm {summary['total']} nhân viên · High={summary['High']} · model={name}"
+                )
+            except Exception as exc:  # noqa: BLE001
+                messagebox.showerror("Batch predict", str(exc))
+
+        def _render_batch(scored: pd.DataFrame, summary: dict, name: str) -> None:
+            clear_frame(result_host)
+            band = band_var.get()
+            view = scored if band == "All" else scored[scored["risk_band"] == band]
+            kpi_row = ctk.CTkFrame(result_host, fg_color="transparent")
+            kpi_row.pack(fill="x", padx=4)
+            for i, (label, key, tone) in enumerate([
+                ("Tổng", "total", "brand"),
+                ("High", "High", "danger"),
+                ("Medium", "Medium", "warning"),
+                ("Low", "Low", "success"),
+                ("% High", "high_rate", "accent"),
+            ]):
+                kpi_row.grid_columnconfigure(i, weight=1)
+                val = summary.get(key, 0)
+                text = f"{val}%" if key == "high_rate" else str(val)
+                make_kpi_card(kpi_row, label, text, tone=tone).grid(row=0, column=i, sticky="nsew", padx=3)
+            body_text(result_host, f"Model: {name}  ·  Đang xem: {band} ({len(view)} dòng)", muted=True)
+            show_dataframe(result_host, view.head(500), height=320, page_size=20)
+
+        def export_batch() -> None:
+            if not self.batch_result or self.batch_result.get("scored") is None:
+                messagebox.showwarning("Xuất Excel", "Chưa có kết quả batch — chạy chấm điểm trước.")
+                return
+            path = filedialog.asksaveasfilename(
+                defaultextension=".xlsx",
+                filetypes=[("Excel", "*.xlsx")],
+                initialfile=f"PeopleRisk_Batch_{datetime.now():%Y%m%d_%H%M}.xlsx",
+            )
+            if not path:
+                return
+            try:
+                scored = self.batch_result["scored"]
+                band = band_var.get()
+                view = scored if band == "All" else scored[scored["risk_band"] == band]
+                with pd.ExcelWriter(path, engine="openpyxl") as w:
+                    view.to_excel(w, sheet_name="Risk_List", index=False)
+                    pd.DataFrame([self.batch_result["summary"]]).to_excel(
+                        w, sheet_name="Summary", index=False
+                    )
+                    high = scored[scored["risk_band"] == "High"]
+                    high.to_excel(w, sheet_name="High_Risk", index=False)
+                messagebox.showinfo("Xuất Excel", f"Đã lưu:\n{path}")
+            except Exception as exc:  # noqa: BLE001
+                messagebox.showerror("Lỗi Excel", str(exc))
+
+        btns = ctk.CTkFrame(intro, fg_color="transparent")
+        btns.pack(anchor="w", padx=10, pady=8)
+        primary_button(btns, "Chấm điểm hàng loạt", run_batch, width=180).pack(side="left", padx=3)
+        secondary_button(btns, "Chọn CSV batch", _pick_batch_csv, width=140).pack(side="left", padx=3)
+        secondary_button(btns, "Xuất Excel rủi ro", export_batch, width=150).pack(side="left", padx=3)
+        secondary_button(
+            btns, "Áp dụng lọc", lambda: self._refresh_batch_view(band_var.get(), result_host), width=120
+        ).pack(side="left", padx=3)
+
+        if self.batch_result and self.batch_result.get("scored") is not None:
+            _render_batch(
+                self.batch_result["scored"],
+                self.batch_result["summary"],
+                self.batch_result.get("model_name") or "—",
+            )
+
+    def _refresh_batch_view(self, band: str, host) -> None:
+        if not self.batch_result or self.batch_result.get("scored") is None:
+            messagebox.showwarning("Batch", "Chưa có kết quả để lọc.")
+            return
+        scored = self.batch_result["scored"]
+        summary = self.batch_result["summary"]
+        name = self.batch_result.get("model_name") or "—"
+        clear_frame(host)
+        view = scored if band == "All" else scored[scored["risk_band"] == band]
+        kpi_row = ctk.CTkFrame(host, fg_color="transparent")
+        kpi_row.pack(fill="x", padx=4)
+        for i, (label, key, tone) in enumerate([
+            ("Tổng", "total", "brand"),
+            ("High", "High", "danger"),
+            ("Medium", "Medium", "warning"),
+            ("Low", "Low", "success"),
+            ("% High", "high_rate", "accent"),
+        ]):
+            kpi_row.grid_columnconfigure(i, weight=1)
+            val = summary.get(key, 0)
+            text = f"{val}%" if key == "high_rate" else str(val)
+            make_kpi_card(kpi_row, label, text, tone=tone).grid(row=0, column=i, sticky="nsew", padx=3)
+        body_text(host, f"Model: {name}  ·  Đang xem: {band} ({len(view)} dòng)", muted=True)
+        show_dataframe(host, view.head(500), height=320, page_size=20)
+
+    def _compute_global_shap(self, prefer_model: str | None = "Random Forest") -> dict[str, Any] | None:
+        """Tính SHAP toàn cục trên model ưu tiên (RF) hoặc best model."""
+        if not self.train_result or not self.eval_result:
+            return None
+        models = self.train_result.get("models") or {}
+        name = prefer_model if prefer_model in models else self.eval_result.get("best_model_name")
+        if name not in models:
+            name = next(iter(models))
+        pipe = models[name]
+        X_bg = self.train_result["X_train"]
+        result = explain_global_shap(
+            pipe,
+            X_bg,
+            self.train_result["numeric_features"],
+            self.train_result["categorical_features"],
+            top_n=15,
+        )
+        result["model_name"] = name
+        self.shap_global = result
+        return result
+
+    def _run_global_shap_ui(self) -> None:
+        try:
+            if not (self.train_result and self.eval_result):
+                messagebox.showwarning("SHAP", "Cần huấn luyện mô hình trước.")
+                return
+            self._compute_global_shap(prefer_model="Random Forest")
+            self.show_page("model")
+            messagebox.showinfo("SHAP", "Đã tính SHAP toàn cục.")
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("SHAP", str(exc))
 
     def _ensure_classifier_trained(self, force: bool = False):
         """Trả về (model, feature_columns, name). Train lại nếu thiếu hoặc feature lệch dataset."""
@@ -1650,10 +2128,23 @@ class PeopleRiskApp(ctk.CTk):
             if mem is not None:
                 return mem
 
-        tr = train_classification_models(self.df, save=True, target=self.target)
+        tr = train_classification_models(self.df, save=True, target=self.target, run_cv=True)
         ev = evaluate_all_classifiers(tr["models"], tr["X_test"], tr["y_test"])
+        if tr.get("cv_table") is not None:
+            ev["cv_table"] = tr["cv_table"]
+            ev["metrics_table"] = merge_cv_into_metrics(ev["metrics_table"], tr["cv_table"])
+            ev["selection_reason"] = (
+                ev["selection_reason"]
+                + f" Đã chạy Stratified {tr.get('cv_folds', 5)}-Fold CV để kiểm tra độ ổn định."
+            )
         self.train_result, self.eval_result = tr, ev
         self.model_status = ev["best_model_name"]
+        self.shap_local = None
+        self.last_prediction = None
+        try:
+            self._compute_global_shap(prefer_model="Random Forest")
+        except Exception:  # noqa: BLE001
+            self.shap_global = None
         meta_path = MODELS_DIR / "feature_meta.joblib"
         meta = {
             "best_model_name": ev["best_model_name"],

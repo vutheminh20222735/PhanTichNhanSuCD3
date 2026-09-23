@@ -105,6 +105,40 @@ class ReportPDF(FPDF):
 
 
 
+def _write_shap_section(pdf: ReportPDF, shap_section: dict[str, Any] | None, section_no: int) -> None:
+    pdf.section_title(f"{section_no}. Giải thích mô hình (SHAP)")
+    if not shap_section:
+        pdf.body("Chưa có kết quả SHAP — huấn luyện mô hình và chạy dự báo/giải thích trước.")
+        return
+
+    pred = shap_section.get("prediction") or {}
+    if pred:
+        pdf.body(
+            f"Dự báo đang giải thích: {pred.get('probability_pct', '—')}% · "
+            f"mức rủi ro {pred.get('risk_band', '—')} · "
+            f"nhãn {pred.get('prediction', '—')} · "
+            f"model {shap_section.get('model_name') or '—'}."
+        )
+
+    if shap_section.get("global_narrative"):
+        pdf.body("SHAP toàn cục:", size=10)
+        pdf.body(shap_section["global_narrative"], size=9)
+        for item in shap_section.get("global_top") or []:
+            pdf.bullet(f"{item.get('feature')}: mean|SHAP|={item.get('value')}")
+
+    if shap_section.get("local_narrative"):
+        pdf.body("SHAP cục bộ (cá nhân):", size=10)
+        pdf.body(shap_section["local_narrative"], size=9)
+        for item in shap_section.get("local_top") or []:
+            direction = item.get("direction") or ""
+            pdf.bullet(
+                f"{item.get('feature')}: SHAP={item.get('shap')} ({direction})"
+            )
+
+    if not shap_section.get("global_narrative") and not shap_section.get("local_narrative"):
+        pdf.body("Chưa có diễn giải SHAP để đưa vào báo cáo.")
+
+
 def export_report_pdf(
     path: str | Path,
     *,
@@ -119,6 +153,7 @@ def export_report_pdf(
     model_name: str | None = None,
     model_metrics: dict[str, Any] | None = None,
     metrics_table: Any = None,
+    shap_section: dict[str, Any] | None = None,
     generated_at: datetime | None = None,
 ) -> Path:
     """Tạo file PDF báo cáo tổng hợp. Trả về đường dẫn đã lưu."""
@@ -181,8 +216,11 @@ def export_report_pdf(
     else:
         pdf.body("Chưa huấn luyện mô hình — phần này trống.")
 
+    # --- SHAP ---
+    _write_shap_section(pdf, shap_section, 4)
+
     # --- Insights ---
-    pdf.section_title(f"4. Insights ({len(insights)})")
+    pdf.section_title(f"5. Insights ({len(insights)})")
     if not insights:
         pdf.body("Không có insight.")
     else:
@@ -204,7 +242,7 @@ def export_report_pdf(
             pdf.ln(1)
 
     # --- Recommendations ---
-    pdf.section_title(f"5. Khuyến nghị ({len(recommendations)})")
+    pdf.section_title(f"6. Khuyến nghị ({len(recommendations)})")
     if not recommendations:
         pdf.body("Không có khuyến nghị.")
     else:
@@ -230,7 +268,7 @@ def export_report_pdf(
             pdf.ln(1)
 
     # --- Kết luận ngắn ---
-    pdf.section_title("6. Kết luận tóm tắt")
+    pdf.section_title("7. Kết luận tóm tắt")
     rate = kpis.get("attrition_rate")
     lines = [
         f"Dataset «{dataset_name or '—'}» với {n_rows:,} nhân viên đang phân tích "
@@ -240,6 +278,8 @@ def export_report_pdf(
         lines.append(f"Tỷ lệ nghỉ việc hiện tại khoảng {rate}%.")
     if model_name:
         lines.append(f"Mô hình dự báo đang dùng: {model_name}.")
+    if shap_section and (shap_section.get("local_narrative") or shap_section.get("global_narrative")):
+        lines.append("Báo cáo có kèm giải thích SHAP (toàn cục và/hoặc cục bộ).")
     if insights:
         lines.append(f"Đã rút {len(insights)} insight và {len(recommendations)} khuyến nghị hành động.")
     else:

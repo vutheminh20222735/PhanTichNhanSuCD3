@@ -66,13 +66,16 @@ class TestWordExport(unittest.TestCase):
             "model_name": None,
             "model_metrics": None,
             "metrics_table": None,
+            "shap_section": None,
         }
 
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "report.pdf"
             with patch("ung_dung.filedialog.asksaveasfilename", return_value=str(out)), patch(
                 "ung_dung.export_report_pdf"
-            ) as mock_pdf, patch("ung_dung.messagebox.showinfo"):
+            ) as mock_pdf, patch("ung_dung.messagebox.showinfo"), patch(
+                "ung_dung.messagebox.showerror"
+            ):
                 app._export_pdf()
                 mock_pdf.assert_called_once()
                 self.assertEqual(mock_pdf.call_args.kwargs["dataset_name"], "Dataset demo")

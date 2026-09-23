@@ -82,6 +82,42 @@ def _format_metric_value(value: Any) -> str:
     return str(value)
 
 
+def _write_shap_section(doc: Document, shap_section: dict[str, Any] | None) -> None:
+    _add_heading(doc, "4. Giải thích mô hình (SHAP)", level=1)
+    if not shap_section:
+        _add_paragraph(doc, "Chưa có kết quả SHAP — huấn luyện mô hình và chạy dự báo/giải thích trước.")
+        return
+
+    pred = shap_section.get("prediction") or {}
+    if pred:
+        _add_paragraph(
+            doc,
+            f"Dự báo đang giải thích: {pred.get('probability_pct', '—')}% · "
+            f"mức rủi ro {pred.get('risk_band', '—')} · "
+            f"nhãn {pred.get('prediction', '—')} · "
+            f"model {shap_section.get('model_name') or '—'}.",
+        )
+
+    if shap_section.get("global_narrative"):
+        _add_paragraph(doc, "SHAP toàn cục:", bold=True)
+        _add_paragraph(doc, shap_section["global_narrative"])
+        for item in shap_section.get("global_top") or []:
+            _add_bullet(doc, f"{item.get('feature')}: mean|SHAP|={item.get('value')}")
+
+    if shap_section.get("local_narrative"):
+        _add_paragraph(doc, "SHAP cục bộ (cá nhân):", bold=True)
+        _add_paragraph(doc, shap_section["local_narrative"])
+        for item in shap_section.get("local_top") or []:
+            direction = item.get("direction") or ""
+            _add_bullet(
+                doc,
+                f"{item.get('feature')}: SHAP={item.get('shap')} ({direction})",
+            )
+
+    if not shap_section.get("global_narrative") and not shap_section.get("local_narrative"):
+        _add_paragraph(doc, "Chưa có diễn giải SHAP để đưa vào báo cáo.")
+
+
 def export_report_word(
     path: str | Path,
     *,
@@ -96,6 +132,7 @@ def export_report_word(
     model_name: str | None = None,
     model_metrics: dict[str, Any] | None = None,
     metrics_table: Any = None,
+    shap_section: dict[str, Any] | None = None,
     generated_at: datetime | None = None,
 ) -> Path:
     """Tạo file Word báo cáo tổng hợp. Trả về đường dẫn đã lưu."""
@@ -176,7 +213,9 @@ def export_report_word(
     else:
         _add_paragraph(doc, "Chưa huấn luyện mô hình — phần này trống.")
 
-    _add_heading(doc, f"4. Insights ({len(insights)})", level=1)
+    _write_shap_section(doc, shap_section)
+
+    _add_heading(doc, f"5. Insights ({len(insights)})", level=1)
     if not insights:
         _add_paragraph(doc, "Không có insight.")
     else:
@@ -189,7 +228,7 @@ def export_report_word(
             if ins.get("evidence"):
                 _add_paragraph(doc, f"Bằng chứng: {ins['evidence']}")
 
-    _add_heading(doc, f"5. Khuyến nghị ({len(recommendations)})", level=1)
+    _add_heading(doc, f"6. Khuyến nghị ({len(recommendations)})", level=1)
     if not recommendations:
         _add_paragraph(doc, "Không có khuyến nghị.")
     else:
@@ -206,7 +245,7 @@ def export_report_word(
             if rec.get("expected_goal"):
                 _add_paragraph(doc, f"Mục tiêu: {rec['expected_goal']}")
 
-    _add_heading(doc, "6. Kết luận tóm tắt", level=1)
+    _add_heading(doc, "7. Kết luận tóm tắt", level=1)
     rate = kpis.get("attrition_rate")
     summary_lines = [
         f"Dataset «{dataset_name or '—'}» với {n_rows:,} nhân viên đang phân tích (target: {target or '—'}).".replace(",", "."),
@@ -215,6 +254,8 @@ def export_report_word(
         summary_lines.append(f"Tỷ lệ nghỉ việc hiện tại khoảng {rate}%.")
     if model_name:
         summary_lines.append(f"Mô hình dự báo đang dùng: {model_name}.")
+    if shap_section and (shap_section.get("local_narrative") or shap_section.get("global_narrative")):
+        summary_lines.append("Báo cáo có kèm giải thích SHAP (toàn cục và/hoặc cục bộ).")
     if insights:
         summary_lines.append(f"Đã rút {len(insights)} insight và {len(recommendations)} khuyến nghị hành động.")
     else:

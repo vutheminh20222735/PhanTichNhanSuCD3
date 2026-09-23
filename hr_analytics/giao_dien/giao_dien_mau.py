@@ -56,8 +56,9 @@ NAV_SECTIONS = [
     (
         "AI / ML",
         [
-            ("model", "Mô hình AI", "Classification · Regression"),
-            ("predict", "Dự báo rủi ro", "Form động theo feature"),
+            ("model", "Mô hình AI", "CV · LR/RF/GB/XGB · SHAP"),
+            ("predict", "Dự báo rủi ro", "Đơn lẻ · What-if · SHAP"),
+            ("batch", "Dự báo hàng loạt", "Chấm cả danh sách · xuất Excel"),
         ],
     ),
     (

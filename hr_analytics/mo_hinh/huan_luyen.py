@@ -1,4 +1,4 @@
-"""Huấn luyện mô hình Classification và Regression."""
+"""Huấn luyện mô hình Classification và Regression (multi-model + CV)."""
 
 from __future__ import annotations
 
@@ -6,20 +6,28 @@ from pathlib import Path
 from typing import Any
 
 import joblib
+import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.linear_model import LinearRegression, LogisticRegression
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedKFold, cross_validate, train_test_split
 from sklearn.pipeline import Pipeline
 
 from xu_ly.tim_cot_du_lieu import build_schema
 from xu_ly.chuan_bi_du_lieu import (
     build_preprocessor,
     get_feature_columns,
-    map_target,
     prepare_xy,
 )
 from xu_ly.tien_ich import MODELS_DIR
+
+try:
+    from xgboost import XGBClassifier
+
+    HAS_XGBOOST = True
+except Exception:  # noqa: BLE001
+    XGBClassifier = None  # type: ignore[misc, assignment]
+    HAS_XGBOOST = False
 
 
 def split_data(
@@ -76,23 +84,139 @@ def build_rf_pipeline(
     return Pipeline([("preprocess", preprocessor), ("model", clf)])
 
 
+def build_gb_pipeline(
+    numeric_features: list[str],
+    categorical_features: list[str],
+) -> Pipeline:
+    """Pipeline Gradient Boosting."""
+    preprocessor = build_preprocessor(
+        numeric_features, categorical_features, scale_numeric=False
+    )
+    clf = GradientBoostingClassifier(
+        n_estimators=150,
+        learning_rate=0.08,
+        max_depth=3,
+        random_state=42,
+    )
+    return Pipeline([("preprocess", preprocessor), ("model", clf)])
+
+
+def build_xgb_pipeline(
+    numeric_features: list[str],
+    categorical_features: list[str],
+    y_train: pd.Series | None = None,
+) -> Pipeline:
+    """Pipeline XGBoost (nếu đã cài xgboost)."""
+    if not HAS_XGBOOST or XGBClassifier is None:
+        raise ImportError("xgboost chưa được cài đặt.")
+    preprocessor = build_preprocessor(
+        numeric_features, categorical_features, scale_numeric=False
+    )
+    # Cân bằng lớp: scale_pos_weight ≈ neg/pos
+    scale_pos_weight = 1.0
+    if y_train is not None:
+        pos = float((y_train == 1).sum())
+        neg = float((y_train == 0).sum())
+        if pos > 0:
+            scale_pos_weight = max(neg / pos, 1.0)
+    clf = XGBClassifier(
+        n_estimators=200,
+        max_depth=4,
+        learning_rate=0.08,
+        subsample=0.9,
+        colsample_bytree=0.9,
+        reg_lambda=1.0,
+        random_state=42,
+        n_jobs=-1,
+        eval_metric="logloss",
+        scale_pos_weight=scale_pos_weight,
+    )
+    return Pipeline([("preprocess", preprocessor), ("model", clf)])
+
+
+def build_classifier_zoo(
+    numeric: list[str],
+    categorical: list[str],
+    y_train: pd.Series | None = None,
+) -> dict[str, Pipeline]:
+    """Tạo bộ mô hình so sánh: LR, RF, GB, (XGB nếu có)."""
+    models: dict[str, Pipeline] = {
+        "Logistic Regression": build_logistic_pipeline(numeric, categorical),
+        "Random Forest": build_rf_pipeline(numeric, categorical),
+        "Gradient Boosting": build_gb_pipeline(numeric, categorical),
+    }
+    if HAS_XGBOOST:
+        try:
+            models["XGBoost"] = build_xgb_pipeline(numeric, categorical, y_train=y_train)
+        except Exception:  # noqa: BLE001
+            pass
+    return models
+
+
+def run_cross_validation(
+    models: dict[str, Any],
+    X: pd.DataFrame,
+    y: pd.Series,
+    *,
+    n_splits: int = 5,
+    random_state: int = 42,
+) -> pd.DataFrame:
+    """Stratified K-Fold CV — trả bảng mean±std theo model."""
+    scoring = {
+        "accuracy": "accuracy",
+        "precision": "precision",
+        "recall": "recall",
+        "f1": "f1",
+        "roc_auc": "roc_auc",
+    }
+    cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
+    rows: list[dict[str, Any]] = []
+    for name, model in models.items():
+        scores = cross_validate(
+            model,
+            X,
+            y,
+            cv=cv,
+            scoring=scoring,
+            n_jobs=-1,
+            error_score="raise",
+        )
+        row: dict[str, Any] = {"Model": name}
+        for key in scoring:
+            vals = scores[f"test_{key}"]
+            row[f"CV_{key.capitalize()}"] = round(float(np.mean(vals)), 4)
+            row[f"CV_{key.capitalize()}_std"] = round(float(np.std(vals)), 4)
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
 def train_classification_models(
     df: pd.DataFrame,
     save: bool = True,
     target: str | None = None,
+    *,
+    run_cv: bool = True,
+    cv_folds: int = 5,
 ) -> dict[str, Any]:
-    """Huấn luyện Logistic Regression và Random Forest.
+    """Huấn luyện LR / RF / GB / (XGB) + tùy chọn Cross-Validation.
 
     Preprocessing chỉ fit trên training data nhờ Pipeline.
     """
     X, y, numeric, categorical = prepare_xy(df, target=target)
     X_train, X_test, y_train, y_test = split_data(X, y)
 
-    lr_pipe = build_logistic_pipeline(numeric, categorical)
-    rf_pipe = build_rf_pipeline(numeric, categorical)
+    models = build_classifier_zoo(numeric, categorical, y_train=y_train)
+    for pipe in models.values():
+        pipe.fit(X_train, y_train)
 
-    lr_pipe.fit(X_train, y_train)
-    rf_pipe.fit(X_train, y_train)
+    cv_table = None
+    if run_cv:
+        # CV trên full X/y với pipeline mới (không tái dùng model đã fit)
+        cv_models = build_classifier_zoo(numeric, categorical, y_train=y)
+        try:
+            cv_table = run_cross_validation(cv_models, X, y, n_splits=cv_folds)
+        except Exception:  # noqa: BLE001
+            cv_table = None
 
     result: dict[str, Any] = {
         "X_train": X_train,
@@ -101,27 +225,37 @@ def train_classification_models(
         "y_test": y_test,
         "numeric_features": numeric,
         "categorical_features": categorical,
-        "models": {
-            "Logistic Regression": lr_pipe,
-            "Random Forest": rf_pipe,
-        },
+        "models": models,
         "feature_columns": list(X.columns),
+        "cv_table": cv_table,
+        "cv_folds": cv_folds if cv_table is not None else None,
+        "has_xgboost": HAS_XGBOOST and "XGBoost" in models,
     }
 
     if save:
         MODELS_DIR.mkdir(parents=True, exist_ok=True)
-        joblib.dump(lr_pipe, MODELS_DIR / "logistic_regression.joblib")
-        joblib.dump(rf_pipe, MODELS_DIR / "random_forest.joblib")
+        saved: dict[str, str] = {}
+        name_map = {
+            "Logistic Regression": "logistic_regression.joblib",
+            "Random Forest": "random_forest.joblib",
+            "Gradient Boosting": "gradient_boosting.joblib",
+            "XGBoost": "xgboost.joblib",
+        }
+        for name, pipe in models.items():
+            fname = name_map.get(name)
+            if not fname:
+                continue
+            path = MODELS_DIR / fname
+            joblib.dump(pipe, path)
+            saved[name] = str(path)
         meta = {
             "numeric_features": numeric,
             "categorical_features": categorical,
             "feature_columns": list(X.columns),
+            "model_names": list(models.keys()),
         }
         joblib.dump(meta, MODELS_DIR / "feature_meta.joblib")
-        result["saved_paths"] = {
-            "logistic": str(MODELS_DIR / "logistic_regression.joblib"),
-            "random_forest": str(MODELS_DIR / "random_forest.joblib"),
-        }
+        result["saved_paths"] = saved
 
     return result
 
@@ -196,6 +330,8 @@ def load_saved_model(name: str) -> Any:
     mapping = {
         "logistic": MODELS_DIR / "logistic_regression.joblib",
         "random_forest": MODELS_DIR / "random_forest.joblib",
+        "gradient_boosting": MODELS_DIR / "gradient_boosting.joblib",
+        "xgboost": MODELS_DIR / "xgboost.joblib",
         "salary": MODELS_DIR / "salary_linear_regression.joblib",
     }
     path = mapping.get(name)
