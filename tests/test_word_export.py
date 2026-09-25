@@ -80,6 +80,70 @@ class TestWordExport(unittest.TestCase):
                 mock_pdf.assert_called_once()
                 self.assertEqual(mock_pdf.call_args.kwargs["dataset_name"], "Dataset demo")
 
+    def test_export_word_uses_dataset_state(self):
+        app = object.__new__(PeopleRiskApp)
+        app.dataset_state = DatasetState(
+            status=DatasetStatus.READY,
+            name="Dataset demo",
+            df=__import__("pandas").DataFrame({"attrition": [0, 1], "age": [25, 30]}),
+            target="attrition",
+        )
+        app.eval_result = None
+        app._report_payload = lambda: {
+            "df": __import__("pandas").DataFrame({"attrition": [0, 1], "age": [25, 30]}),
+            "kpis": {"attrition_rate": 12.5},
+            "insights": [{"title": "Turnover", "insight": "Tăng", "severity": "Cao"}],
+            "recs": [{"based_on": "Turnover", "recommended_action": "Giám sát", "priority": "Cao"}],
+            "filter_note": "Không lọc",
+            "model_name": None,
+            "model_metrics": None,
+            "metrics_table": None,
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "report.docx"
+            with patch("ung_dung.filedialog.asksaveasfilename", return_value=str(out)), patch(
+                "ung_dung.export_report_word"
+            ) as mock_word, patch("ung_dung.messagebox.showinfo"):
+                app._export_word()
+                mock_word.assert_called_once()
+                self.assertEqual(mock_word.call_args.kwargs["dataset_name"], "Dataset demo")
+
+    def test_export_excel_creates_xlsx(self):
+        app = object.__new__(PeopleRiskApp)
+        app.dataset_state = DatasetState(
+            status=DatasetStatus.READY,
+            name="Dataset demo",
+            df=__import__("pandas").DataFrame({"attrition": [0, 1], "age": [25, 30]}),
+            target="attrition",
+        )
+        app.eval_result = None
+        app._report_payload = lambda: {
+            "df": __import__("pandas").DataFrame({"attrition": [0, 1], "age": [25, 30]}),
+            "kpis": {"attrition_rate": 12.5},
+            "insights": [{"title": "Turnover", "insight": "Tăng", "severity": "Cao"}],
+            "recs": [{"based_on": "Turnover", "recommended_action": "Giám sát", "priority": "Cao"}],
+            "filter_note": "Không lọc",
+            "model_name": None,
+            "model_metrics": None,
+            "metrics_table": None,
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "report.xlsx"
+            with patch("ung_dung.filedialog.asksaveasfilename", return_value=str(out)), patch(
+                "ung_dung.messagebox.showinfo"
+            ):
+                app._export()
+                self.assertTrue(out.exists())
+                self.assertGreater(out.stat().st_size, 0)
+
+    def test_validate_dataset_for_analysis_handles_invalid_data(self):
+        df = __import__("pandas").DataFrame({"attrition": [None, None], "age": [20, 30]})
+        ok, message = PeopleRiskApp._validate_dataset_for_analysis(object.__new__(PeopleRiskApp), df, "attrition")
+        self.assertFalse(ok)
+        self.assertIn("trống", message.lower())
+
 
 if __name__ == "__main__":
     unittest.main()
